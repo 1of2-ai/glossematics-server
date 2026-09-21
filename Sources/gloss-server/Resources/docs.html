@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<!--
+  Glossematics embeddings server — API documentation page.
+
+  This file is the source of truth for GET /docs. It is packaged into the gloss-server
+  executable as a SwiftPM resource at build time (Resources/docs.html -> the target's
+  resource bundle) and templated at serve time by DocsPage.swift.
+
+  Tokens (substituted with HTML-escaped values on every request):
+    {{BASE_URL}}             e.g. http://127.0.0.1:11435
+    {{MODEL_ID}}             served model id, from the bundle manifest
+    {{DEFAULT_DIMENSIONS}}   default Matryoshka size
+    {{MATRYOSHKA}}           all supported sizes, " / "-joined
+    {{MAX_BATCH}}            maximum input items per request
+    {{MAX_BODY_MB}}          maximum request body size in MiB
+    {{SPACE_ID}}             semantic space fingerprint from the manifest
+    {{PORT}}                 TCP port
+    {{VERSION}}              server version
+
+  Layout adapted from the API Documentation HTML Template
+  (MIT © 2016 Florian Nicolas, github.com/floriannicolas/API-Documentation-HTML-Template).
+  CSS and script are inlined; the page renders with zero external requests.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{MODEL_ID}} — API Documentation</title>
+<style>
+html,body,div,span,h1,h2,h3,h4,h5,h6,p,blockquote,pre,a,code,b,u,i,center,dl,dt,dd,ol,ul,li,table,caption,tbody,tfoot,thead,tr,th,td,footer{margin:0;padding:0;border:0;font-size:100%;font:inherit;vertical-align:baseline}
+footer{display:block}
+*{transition:all .3s ease}
+html,body{position:relative;min-height:100%;height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Source Code Pro',sans-serif}
+strong{font-weight:500}
+.overflow-hidden{position:relative;overflow:hidden}
+.content a{color:#00a8e3;text-decoration:none}
+.content a:hover{text-decoration:underline}
+.scroll-to-link{cursor:pointer}
+.content p,.content ul,.content ol{font-size:14px;color:#777A7A;margin-bottom:16px;line-height:1.6;font-weight:300}
+.content h1:first-child{font-size:1.333em;color:#034c8f;padding-top:2.5em;text-transform:uppercase;margin-bottom:1.3em;clear:both}
+code,pre{font-family:ui-monospace,SFMono-Regular,'Source Code Pro',Menlo,monospace}
+.higlighted{background-color:rgba(0,0,0,0.05);padding:3px;border-radius:3px}
+.method{display:inline-block;font-size:11px;font-weight:500;letter-spacing:.06em;padding:2px 8px;border-radius:3px;color:#fff;vertical-align:1px}
+.method-post{background-color:#00a8e3}
+.method-get{background-color:#59C3C3}
+.left-menu{position:fixed;z-index:3;top:0;left:0;bottom:0;width:300px;box-sizing:border-box;background-color:#f4f5f8;overflow-x:hidden;font-size:18px}
+.left-menu .content-infos{position:relative;padding:12px 13.25%;margin-bottom:20px}
+.left-menu .info{position:relative;font-size:13px;margin-top:5px;color:#777A7A;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.left-menu .info b{font-weight:500;color:#034c8f}
+.content-logo{position:relative;display:block;width:100%;box-sizing:border-box;padding:1.425em 11.5%;padding-right:0}
+.content-logo .logo{display:flex;align-items:center}
+.logo-mark{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:8px;background:#323f4c;color:#fff;font-weight:500;font-size:18px}
+.content-logo span{margin-left:10px;color:#323F4C;font-size:1.05em}
+.content-menu{margin:2em auto 2em;padding:0 0 100px}
+.content-menu ul{list-style:none;margin:0;padding:0;line-height:28px}
+.content-menu ul li{list-style:none;margin:0;padding:0;line-height:0}
+.content-menu ul li:hover,.content-menu ul li.active{background-color:#DCDEE9}
+.content-menu ul li:hover a,.content-menu ul li.active a{color:#00a8e3}
+.content-menu ul li a{padding:12px 13.25%;color:#777A7A;letter-spacing:.025em;line-height:1.1;display:block;text-transform:capitalize}
+.content-page{position:relative;box-sizing:border-box;margin-left:300px;z-index:2;background-color:#fff;min-height:100%;padding-bottom:1px}
+.content-code{width:50%;position:absolute;right:0;top:0;bottom:0;background-color:#323f4c}
+.content{position:relative;z-index:30}
+.content h1,.content h2,.content h3,.content h4,.content h5,.content h6,.content p,.content table,.content dl{margin-right:50%;padding:0 28px;box-sizing:border-box;display:block;max-width:680px}
+.break-word{word-break:break-word;overflow-wrap:break-word;word-wrap:break-word}
+.content h2,.content h3{font-size:15px;margin-top:2.5em;margin-bottom:.8em;color:#034c8f;text-transform:uppercase}
+.content h2{font-size:1.333em}
+.content h4{font-size:14px;color:#00a8e3;margin-top:0;margin-bottom:.2em}
+.content pre{background-color:#323f4c;border-color:#323f4c;color:#fff;padding:0 28px 2em;margin:0;width:50%;float:right;clear:right;box-sizing:border-box}
+.content pre code{font-size:12px;line-height:1.5;display:block;padding-top:2.5em;white-space:pre;overflow-x:auto}
+.content table{font-size:.825em;margin-bottom:1.5em;border-collapse:collapse;border-spacing:0}
+.content table tr:last-child{border-bottom:1px solid #ccc}
+.content table th{font-size:.925em;padding:5px 18px 5px 0;border-bottom:1px solid #ccc;vertical-align:bottom;text-align:left;line-height:1.6}
+.content table td{padding:5px 18px 5px 0;text-align:left;vertical-align:top;line-height:1.6;font-weight:300;color:#777A7A}
+footer{clear:both;padding:2em 28px;font-size:12px;color:#9aa0a6;background-color:#323f4c}
+.burger-menu-icon{background-color:transparent;border:none;cursor:pointer;display:inline-block;vertical-align:middle;padding:0;position:absolute;right:26px;top:26px;display:none}
+.burger-menu-icon .line{fill:none;stroke:#000;stroke-width:6;transition:stroke-dasharray 600ms cubic-bezier(.4,0,.2,1),stroke-dashoffset 600ms cubic-bezier(.4,0,.2,1)}
+.burger-menu-icon .line1{stroke-dasharray:60 207;stroke-width:6}
+.burger-menu-icon .line2{stroke-dasharray:60 60;stroke-width:6}
+.burger-menu-icon .line3{stroke-dasharray:60 207;stroke-width:6}
+html.menu-opened .burger-menu-icon .line1{stroke-dasharray:90 207;stroke-dashoffset:-134;stroke-width:6}
+html.menu-opened .burger-menu-icon .line2{stroke-dasharray:1 60;stroke-dashoffset:-30;stroke-width:6}
+html.menu-opened .burger-menu-icon .line3{stroke-dasharray:90 207;stroke-dashoffset:-134;stroke-width:6}
+@media only screen and (max-width:980px){
+.content h1,.content h2,.content h3,.content h4,.content h5,.content h6,.content p,.content table,.content dl{margin-right:0}
+.content-code{display:none}
+.content pre{margin:20px 0;padding:28px;display:block;width:auto;float:none}
+.content pre code{padding-top:0}
+}
+@media only screen and (max-width:680px){
+html{scroll-padding-top:83px}
+html.menu-opened{overflow:hidden}
+.left-menu{position:relative;width:auto}
+.left-menu .content-menu{position:fixed;width:400px;max-width:90vw;z-index:3;top:0;bottom:0;right:-405px;left:auto;background-color:#fff;margin:0;overflow-x:hidden;padding-top:83px;padding-bottom:20px}
+html.menu-opened .left-menu .content-menu{right:0}
+.left-menu .mobile-menu-closer{position:fixed;top:0;left:0;right:0;bottom:0;z-index:2;background-color:rgba(50,63,76,.5);opacity:0;visibility:hidden}
+html.menu-opened .left-menu .mobile-menu-closer{opacity:1;visibility:visible}
+.left-menu .content-logo{position:fixed;top:0;left:0;right:0;z-index:4;background-color:#f4f5f8}
+.content-logo .logo{margin-right:65px}
+.content-page{margin-left:0;padding-top:83px}
+.burger-menu-icon{display:block}
+}
+</style>
+</head>
+<body>
+<div class="left-menu">
+  <div class="content-logo">
+    <div class="logo"><span class="logo-mark">G</span><span>Glossematics API</span></div>
+    <button class="burger-menu-icon" id="button-menu-mobile" aria-label="menu">
+      <svg width="34" height="34" viewBox="0 0 100 100"><path class="line line1" d="M 20,29.000046 H 80.000231 C 80.000231,29.000046 94.498839,28.817352 94.532987,66.711331 94.543142,77.980673 90.966081,81.670246 85.259173,81.668997 79.552261,81.667751 75.000211,74.999942 75.000211,74.999942 L 25.000021,25.000058"></path><path class="line line2" d="M 20,50 H 80"></path><path class="line line3" d="M 20,70.999954 H 80.000231 C 80.000231,70.999954 94.498839,71.182648 94.532987,33.288669 94.543142,22.019327 90.966081,18.329754 85.259173,18.331003 79.552261,18.332249 75.000211,25.000058 75.000211,25.000058 L 25.000021,74.999942"></path></svg>
+    </button>
+  </div>
+  <div class="mobile-menu-closer"></div>
+  <div class="content-menu">
+    <div class="content-infos">
+      <div class="info"><b>Version:</b> {{VERSION}}</div>
+      <div class="info"><b>Model:</b> {{MODEL_ID}}</div>
+      <div class="info"><b>Binding:</b> localhost only</div>
+    </div>
+    <ul>
+      <li class="scroll-to-link active" data-target="content-get-started"><a>Get started</a></li>
+      <li class="scroll-to-link" data-target="content-create-embeddings"><a>Create embeddings</a></li>
+      <li class="scroll-to-link" data-target="content-roles"><a>Roles &amp; spaces</a></li>
+      <li class="scroll-to-link" data-target="content-models"><a>List models</a></li>
+      <li class="scroll-to-link" data-target="content-health"><a>Health</a></li>
+      <li class="scroll-to-link" data-target="content-errors"><a>Errors</a></li>
+    </ul>
+  </div>
+</div>
+<div class="content-page">
+  <div class="content-code"></div>
+  <div class="content">
+
+    <div class="overflow-hidden content-section" id="content-get-started">
+      <h1>Get started</h1>
+      <p>The Glossematics embeddings server exposes <strong>{{MODEL_ID}}</strong> through an
+        OpenAI-compatible REST API. It runs on-device via Core ML and binds to the loopback
+        interface only — requests never leave this machine, and no API key is required.</p>
+      <p>Base URL: <code class="higlighted break-word">{{BASE_URL}}</code> — every endpoint below is
+        relative to it. Send <code class="higlighted">Content-Type: application/json</code>.</p>
+      <h4>SERVER PROPERTIES</h4>
+      <table>
+        <thead><tr><th>Property</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Model</td><td>{{MODEL_ID}}</td></tr>
+          <tr><td>Matryoshka dimensions</td><td>{{MATRYOSHKA}} (default {{DEFAULT_DIMENSIONS}})</td></tr>
+          <tr><td>Max input items</td><td>{{MAX_BATCH}} per request</td></tr>
+          <tr><td>Max request body</td><td>{{MAX_BODY_MB}} MiB</td></tr>
+          <tr><td>Semantic space</td><td>{{SPACE_ID}}</td></tr>
+        </tbody>
+      </table>
+      <h4>PROBE THE SERVER</h4>
+      <pre><code>curl -s {{BASE_URL}}/health
+curl -s {{BASE_URL}}/v1/models</code></pre>
+    </div>
+
+    <div class="overflow-hidden content-section" id="content-create-embeddings">
+      <h2>Create embeddings</h2>
+      <p>To create embeddings make a <span class="method method-post">POST</span> call to
+        <code class="higlighted break-word">/v1/embeddings</code>. The request body is JSON;
+        vectors come back in input order as an all-or-nothing batch — a failure anywhere rejects
+        the whole request.</p>
+      <h4>QUERY PARAMETERS</h4>
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td>model</td><td>String</td><td>Required. Must be <code class="higlighted">{{MODEL_ID}}</code>.</td></tr>
+          <tr><td>input</td><td>String | Array</td><td>Required. One text string, or an array of strings. Empty strings and empty arrays are rejected.</td></tr>
+          <tr><td>dimensions</td><td>Integer</td><td>(optional) Matryoshka truncation: one of {{MATRYOSHKA}}. Defaults to {{DEFAULT_DIMENSIONS}}. The server loads one model instance per requested size on first use.</td></tr>
+          <tr><td>encoding_format</td><td>String</td><td>(optional) <code class="higlighted">float</code> (default) returns a JSON number array; <code class="higlighted">base64</code> returns little-endian float32 bytes, base64-encoded.</td></tr>
+          <tr><td>task</td><td>String</td><td>(optional) Retrieval conditioning: <code class="higlighted">retrieval.query</code> or <code class="higlighted">query</code> for queries; <code class="higlighted">retrieval.passage</code>, <code class="higlighted">passage</code>, or <code class="higlighted">document</code> for indexed text. Defaults to passage. See <a href="#content-roles">Roles &amp; spaces</a>.</td></tr>
+          <tr><td>role</td><td>String</td><td>(optional) Alias for <code class="higlighted">task</code> using <code class="higlighted">query</code> / <code class="higlighted">document</code>.</td></tr>
+          <tr><td>image_path</td><td>String</td><td>(optional, per input item) Absolute path to a local PNG/JPEG file to embed with the vision tower. Local extension — not part of the OpenAI schema.</td></tr>
+          <tr><td>audio_path</td><td>String</td><td>(optional, per input item) Absolute path to a local WAV/PCM file (≤ 30 s at any rate; converted to 16 kHz mono). Local extension.</td></tr>
+        </tbody>
+      </table>
+      <p>Mix text and media by passing objects as array items:
+        <code class="higlighted">{"text": "..."}</code>,
+        <code class="higlighted">{"image_path": "/abs/x.png"}</code>,
+        <code class="higlighted">{"audio_path": "/abs/x.wav"}</code>, or
+        <code class="higlighted">{"path": "/abs/x", "kind": "image"|"audio"}</code>.</p>
+      <h4>RESPONSE</h4>
+      <table>
+        <thead><tr><th>Field</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td>object</td><td>Always <code class="higlighted">list</code>.</td></tr>
+          <tr><td>data[]</td><td>Objects of <code class="higlighted">{object: "embedding", index, embedding}</code>, ordered by input. <code class="higlighted">embedding</code> is a float array or a base64 string per <code class="higlighted">encoding_format</code>.</td></tr>
+          <tr><td>model</td><td>Echo of the served model id.</td></tr>
+          <tr><td>usage</td><td><code class="higlighted">{prompt_tokens, total_tokens}</code> — real tokenizer counts of the raw text input; media items contribute zero.</td></tr>
+          <tr><td>X-Glossematics-Space / -Dimensions</td><td>Response headers naming the semantic space and the vector size, for storage-side provenance checks.</td></tr>
+        </tbody>
+      </table>
+      <h4>REQUEST</h4>
+      <pre><code>curl -s {{BASE_URL}}/v1/embeddings \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "{{MODEL_ID}}",
+    "input": ["How do I cool an overheating laptop?"],
+    "task": "retrieval.query",
+    "dimensions": 512
+  }'</code></pre>
+      <h4>RESPONSE</h4>
+      <pre><code>{
+  "object": "list",
+  "data": [
+    {
+      "object": "embedding",
+      "index": 0,
+      "embedding": [0.018063795, 0.01642996, ...]
+    }
+  ],
+  "model": "{{MODEL_ID}}",
+  "usage": {"prompt_tokens": 9, "total_tokens": 9}
+}</code></pre>
+    </div>
+
+    <div class="overflow-hidden content-section" id="content-roles">
+      <h2>Roles &amp; spaces</h2>
+      <p>The model conditions every input with a retrieval role. Query-conditioned and
+        document-conditioned vectors live in <strong>different semantic spaces</strong>: the
+        response header <code class="higlighted">X-Glossematics-Space</code> changes when the role
+        changes. Similarity is only meaningful between a query vector and document vectors from
+        the matching space.</p>
+      <p>The default role is <strong>document/passage</strong> — the recipe for indexed corpus
+        vectors, which is what an embeddings endpoint stores. For search-side requests, pass
+        <code class="higlighted">"task": "retrieval.query"</code> explicitly.</p>
+      <h4>INDEX THEN QUERY</h4>
+      <pre><code># 1) index documents (default passage role)
+curl -s {{BASE_URL}}/v1/embeddings -H 'Content-Type: application/json' \
+  -d '{"model":"{{MODEL_ID}}","input":["Paris is the capital of France."]}'
+
+# 2) embed the query with query conditioning
+curl -s {{BASE_URL}}/v1/embeddings -H 'Content-Type: application/json' \
+  -d '{"model":"{{MODEL_ID}}","input":["capital of France?"],"task":"retrieval.query"}'</code></pre>
+    </div>
+
+    <div class="overflow-hidden content-section" id="content-models">
+      <h2>List models</h2>
+      <p><span class="method method-get">GET</span> <code class="higlighted">/v1/models</code> returns
+        the served model in OpenAI list form;
+        <code class="higlighted">/v1/models/{id}</code> returns it as a single object.</p>
+      <h4>RESPONSE</h4>
+      <pre><code>{
+  "object": "list",
+  "data": [
+    {
+      "id": "{{MODEL_ID}}",
+      "object": "model",
+      "created": 1790013228,
+      "owned_by": "glossematics"
+    }
+  ]
+}</code></pre>
+    </div>
+
+    <div class="overflow-hidden content-section" id="content-health">
+      <h2>Health</h2>
+      <p><span class="method method-get">GET</span> <code class="higlighted">/health</code> reports
+        readiness. Polling it also warms the default dimension, so a first embedding request is
+        not the first thing to pay model-load cost.</p>
+      <table>
+        <thead><tr><th>Field</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td>status</td><td><code class="higlighted">ok</code> once the default dimension is loaded, <code class="higlighted">loading</code> during first load, <code class="higlighted">error</code> (HTTP 503) if the bundle failed validation.</td></tr>
+          <tr><td>loaded_dimensions / loading_dimensions</td><td>Matryoshka sizes with live model instances, and sizes currently loading on demand.</td></tr>
+          <tr><td>space</td><td>Semantic space fingerprint of the loaded model.</td></tr>
+          <tr><td>model / default_dimensions / port</td><td>Static server identity.</td></tr>
+        </tbody>
+      </table>
+      <h4>RESPONSE</h4>
+      <pre><code>{
+  "status": "ok",
+  "model": "{{MODEL_ID}}",
+  "default_dimensions": {{DEFAULT_DIMENSIONS}},
+  "loaded_dimensions": [{{DEFAULT_DIMENSIONS}}],
+  "loading_dimensions": [],
+  "space": "glossematics:omni-small:sha256:2dd14268...",
+  "port": {{PORT}}
+}</code></pre>
+    </div>
+
+    <div class="overflow-hidden content-section" id="content-errors">
+      <h2>Errors</h2>
+      <p>Every failure returns an OpenAI-shaped envelope:</p>
+      <h4>ERROR ENVELOPE</h4>
+      <pre><code>{
+  "error": {
+    "message": "dimensions must be one of [32, 64, 128, 256, 512, 1024] for this model",
+    "type": "invalid_request_error",
+    "param": "dimensions",
+    "code": null
+  }
+}</code></pre>
+      <table>
+        <thead><tr><th>Status</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td>400</td><td><code class="higlighted">invalid_request_error</code> — malformed JSON, missing <code class="higlighted">model</code>, empty input, unknown <code class="higlighted">task</code>, unsupported <code class="higlighted">dimensions</code>, text beyond the 32,768-token limit, or a missing/unreadable media path.</td></tr>
+          <tr><td>404</td><td><code class="higlighted">model_not_found</code> — the <code class="higlighted">model</code> id does not match the served model, or an unknown route.</td></tr>
+          <tr><td>405</td><td>Method not allowed for the route (e.g. GET on /v1/embeddings).</td></tr>
+          <tr><td>413</td><td>Request body exceeds the {{MAX_BODY_MB}} MiB limit.</td></tr>
+          <tr><td>431</td><td>Request headers exceed the size limit.</td></tr>
+          <tr><td>500</td><td><code class="higlighted">api_error</code> — inference or model failure. Batch embedding is atomic: nothing was embedded.</td></tr>
+          <tr><td>503</td><td>Health endpoint reporting a failed model load.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+  <footer>Layout adapted from the API Documentation HTML Template (MIT &copy; 2016 Florian Nicolas). Packaged into gloss-server at build time — no external files.</footer>
+</div>
+<script>
+var links=[].slice.call(document.querySelectorAll('.scroll-to-link'));
+function activate(link){links.forEach(function(o){o.classList.remove('active');});link.classList.add('active');}
+links.forEach(function(l){l.addEventListener('click',function(e){e.preventDefault();var t=document.getElementById(l.dataset.target);if(t){t.scrollIntoView({behavior:'smooth'});}activate(l);if(document.documentElement.classList.contains('menu-opened')){document.documentElement.classList.remove('menu-opened');}return false;});});
+var burger=document.getElementById('button-menu-mobile');
+if(burger){burger.onclick=function(e){e.preventDefault();document.documentElement.classList.toggle('menu-opened');};}
+var closer=document.querySelector('.mobile-menu-closer');
+if(closer){closer.onclick=function(e){e.preventDefault();document.documentElement.classList.remove('menu-opened');};}
+var sections=links.map(function(l){return document.getElementById(l.dataset.target);});
+function onScroll(){var y=window.pageYOffset+90;var current=links[0];sections.forEach(function(s,i){if(s&&s.offsetTop<=y){current=links[i];}});if(current){activate(current);}}
+window.addEventListener('scroll',onScroll,{passive:true});
+window.addEventListener('resize',onScroll,{passive:true});
+onScroll();
+</script>
+</body>
+</html>
