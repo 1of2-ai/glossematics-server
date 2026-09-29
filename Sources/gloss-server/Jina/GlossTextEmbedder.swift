@@ -78,11 +78,12 @@ internal final class GlossTextEmbedder {
     private let buckets: [Int]              // sorted ascending
     /// Init-enforced largest bucket; bucket lookup never force-unwraps.
     private let maximumBucket: Int
-    private let cacheLock = NSLock()        // guards `cache` for concurrent embed()
-    private var cache: [Int: CoreMLTextEncoder] = [:]
+    /// Loaded functions by bucket (single-row) or batch key. Each key loads exactly once and never
+    /// while holding a lock other keys need, so a slow `bucket_32768` load cannot stall `bucket_32`.
+    private let cache = KeyedLoadCache<Int, CoreMLTextEncoder>()
 
     /// Latency-optimal unit for a length bucket (ANE ≤128, GPU ≥256), unless forced.
-    private func units(forBucket b: Int) -> MLComputeUnits { forcedUnits ?? (b <= 128 ? .cpuAndNeuralEngine : .cpuAndGPU) }
+    func units(forBucket b: Int) -> MLComputeUnits { forcedUnits ?? (b <= 128 ? .cpuAndNeuralEngine : .cpuAndGPU) }
 
     /// Largest sequence length this embedder can handle (longer is truncated keep-first).
     public var maxTokens: Int { maximumBucket }
@@ -150,7 +151,7 @@ internal final class GlossTextEmbedder {
         self.isMultiFunction = isMultiFunction
         self.buckets = buckets
         self.maximumBucket = maximumBucket
-        self.cache = preloaded
+        for (bucket, encoder) in preloaded { cache.prime(encoder, for: bucket) }
         self.prompts = prompts
         self.taskPrompts = taskPrompts
         self.padTokenID = padTokenID
@@ -243,31 +244,42 @@ internal final class GlossTextEmbedder {
 
     private func encoder(forTokenCount n: Int) throws -> (CoreMLTextEncoder, Int) {
         let bucket = buckets.first { $0 >= n } ?? maximumBucket
-        cacheLock.lock(); defer { cacheLock.unlock() }
-        if let e = cache[bucket] { return (e, bucket) }
-        let fn = isMultiFunction ? "bucket_\(bucket)" : nil
-        let e = try CoreMLTextEncoder(modelURL: compiledURL, computeUnits: units(forBucket: bucket),
-                                      functionName: fn, padTokenID: padTokenID)
-        cache[bucket] = e
-        return (e, bucket)
+        return (try singleRowEncoder(bucket: bucket), bucket)
+    }
+
+    /// The single-row function for `bucket` (`bucket_<S>`), lazily loaded exactly once.
+    func singleRowEncoder(bucket: Int) throws -> CoreMLTextEncoder {
+        try cache.value(for: bucket) {
+            let fn = isMultiFunction ? "bucket_\(bucket)" : nil
+            return try CoreMLTextEncoder(modelURL: compiledURL, computeUnits: units(forBucket: bucket),
+                                         functionName: fn, padTokenID: padTokenID)
+        }
     }
 
     /// The batch function for a fixed bucket (bucket_<S>_b<N>), lazily loaded. Placement follows the
     /// same adaptive policy — batch functions only exist where that placement already wins.
     private func batchEncoder(forBucket bucket: Int) throws -> (CoreMLTextEncoder, Int, Int) {
+        let encoder = try batchRowEncoder(bucket: bucket)
+        return (encoder, encoder.batchSize, bucket)
+    }
+
+    /// The batch function for `bucket` (`bucket_<S>_b<N>`), lazily loaded exactly once.
+    func batchRowEncoder(bucket: Int) throws -> CoreMLTextEncoder {
         guard let pair = batchPairs.first(where: { $0.bucket == bucket }) else {
             throw CoreMLTextEncoder.EncoderError.badModel("no batch function for bucket \(bucket)")
         }
         let bs = pair.size
         let key = -(bucket * 1000 + bs)   // separate cache namespace from the single-row encoders
-        cacheLock.lock(); defer { cacheLock.unlock() }
-        if let e = cache[key] { return (e, bs, bucket) }
-        let fn = isMultiFunction ? "bucket_\(bucket)_b\(bs)" : nil
-        let e = try CoreMLTextEncoder(modelURL: compiledURL, computeUnits: units(forBucket: bucket),
-                                      functionName: fn, padTokenID: padTokenID)
-        cache[key] = e
-        return (e, bs, bucket)
+        return try cache.value(for: key) {
+            let fn = isMultiFunction ? "bucket_\(bucket)_b\(bs)" : nil
+            return try CoreMLTextEncoder(modelURL: compiledURL, computeUnits: units(forBucket: bucket),
+                                         functionName: fn, padTokenID: padTokenID)
+        }
     }
+
+    /// The (size, bucket) batch functions this bundle declares, ascending by bucket — what
+    /// startup verification must exercise.
+    var batchGeometry: [(size: Int, bucket: Int)] { batchPairs.sorted { $0.bucket < $1.bucket } }
 
     /// Embed text. `dim` truncates to a Matryoshka dimension (re-normalized); nil = full vector.
     /// `task` selects a task-specific instruction pair (code models) when the bundle carries

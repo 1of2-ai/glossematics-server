@@ -30,12 +30,12 @@ internal final class GeneralMediaDecoder {
     /// it; bidirectional towers mask it) but must be a valid vocab id; bundles pass their real pad id.
     let padTokenID: Int32
     let buckets: [Int]
-    // Per-S loaded functions (loading is the expensive part; cache once used). `lock` guards the
-    // lazy caches so a shared decoder is safe under concurrent embed() calls (predictions run
-    // outside the lock — MLModel.prediction is itself thread-safe).
-    let lock = NSLock()
-    var embedModels: [Int: MLModel] = [:]
-    var decoderModels: [Int: LoadedDecoder] = [:]
+    // Per-S loaded functions (loading is the expensive part; cache once used). Each key loads
+    // exactly once and never while holding a lock other keys need, so a shared decoder is safe
+    // under concurrent embed() calls and a slow f2048 load cannot stall f128 (predictions run
+    // outside any lock — MLModel.prediction is itself thread-safe).
+    private let embedModels = KeyedLoadCache<Int, MLModel>()
+    private let decoderModels = KeyedLoadCache<Int, LoadedDecoder>()
 
     /// A loaded decoder function plus its declared input contract.
     struct LoadedDecoder {
@@ -74,32 +74,53 @@ internal final class GeneralMediaDecoder {
     /// Latency-optimal unit for a bucket: ANE ≤256, GPU ≥512 (measured crossover near S≈384).
     func units(forS S: Int) -> MLComputeUnits { forcedUnits ?? (S <= 256 ? .cpuAndNeuralEngine : .cpuAndGPU) }
 
-    private func embedModel(_ S: Int) throws -> MLModel {
-        lock.lock(); defer { lock.unlock() }
-        if let m = embedModels[S] { return m }
-        let cfg = MLModelConfiguration(); cfg.computeUnits = units(forS: S); cfg.functionName = "f\(S)"
-        let m = try MLModel(contentsOf: embedCompiled, configuration: cfg)
-        embedModels[S] = m; return m
+    /// The `embed_multifunc` function for sequence bucket `S`, loaded on first use.
+    func embedModel(_ S: Int) throws -> MLModel {
+        try embedModels.value(for: S) {
+            let cfg = MLModelConfiguration(); cfg.computeUnits = units(forS: S); cfg.functionName = "f\(S)"
+            return try MLModel(contentsOf: embedCompiled, configuration: cfg)
+        }
     }
 
-    private func decoderModel(_ S: Int) throws -> LoadedDecoder {
-        lock.lock(); defer { lock.unlock() }
-        if let d = decoderModels[S] { return d }
-        let cfg = MLModelConfiguration(); cfg.computeUnits = units(forS: S); cfg.functionName = "f\(S)"
-        let m = try MLModel(contentsOf: decoderCompiled, configuration: cfg)
-        let inputs = m.modelDescription.inputDescriptionsByName
-        let d = LoadedDecoder(
-            model: m,
-            usesMRoPEPositions: (inputs["position_ids"]?.multiArrayConstraint?.shape.count ?? 2) == 3,
-            requiresAttentionMask: inputs["attention_mask"] != nil
-        )
-        decoderModels[S] = d; return d
+    /// The `decoder_embeds_multifunc` function for sequence bucket `S`, loaded on first use.
+    func decoderModel(_ S: Int) throws -> LoadedDecoder {
+        try decoderModels.value(for: S) {
+            let cfg = MLModelConfiguration(); cfg.computeUnits = units(forS: S); cfg.functionName = "f\(S)"
+            let m = try MLModel(contentsOf: decoderCompiled, configuration: cfg)
+            let inputs = m.modelDescription.inputDescriptionsByName
+            return LoadedDecoder(
+                model: m,
+                usesMRoPEPositions: (inputs["position_ids"]?.multiArrayConstraint?.shape.count ?? 2) == 3,
+                requiresAttentionMask: inputs["attention_mask"] != nil
+            )
+        }
     }
 
     /// `tokenIds` = the full real sequence (prefix + media pads + suffix), length ≤ S.
     /// `features` = (L * featDim) row-major, scattered into rows [scatterOffset, scatterOffset+L).
     /// Returns the L2-normalized embedding.
     public func decode(tokenIds: [Int32], features: [Float], scatterOffset: Int) throws -> [Float] {
+        try validateDecodeInputs(tokenIds: tokenIds, features: features, scatterOffset: scatterOffset)
+        return try decodeValidated(tokenIds: tokenIds, features: features, scatterOffset: scatterOffset,
+                                   bucket: sBucket(forSeq: tokenIds.count))
+    }
+
+    /// `decode` at an explicit sequence bucket instead of the smallest that fits. Production always
+    /// takes the smallest fitting bucket; startup verification uses this to run the SAME sequence
+    /// through every bucket and compare the results.
+    func decode(tokenIds: [Int32], features: [Float], scatterOffset: Int, bucket S: Int) throws -> [Float] {
+        try validateDecodeInputs(tokenIds: tokenIds, features: features, scatterOffset: scatterOffset)
+        return try decodeValidated(tokenIds: tokenIds, features: features, scatterOffset: scatterOffset, bucket: S)
+    }
+
+    private func decodeValidated(tokenIds: [Int32], features: [Float], scatterOffset: Int,
+                                 bucket S: Int) throws -> [Float] {
+        let embedded = try embedTokens(tokenIds, bucket: S)
+        return try decodeEmbedded(embedded, tokenCount: tokenIds.count, features: features,
+                                  scatterOffset: scatterOffset, bucket: S)
+    }
+
+    private func validateDecodeInputs(tokenIds: [Int32], features: [Float], scatterOffset: Int) throws {
         let realLen = tokenIds.count
         guard realLen > 0,
               !features.isEmpty,
@@ -113,10 +134,13 @@ internal final class GeneralMediaDecoder {
               L <= realLen - scatterOffset else {
             throw DecoderError.invalidInput("media feature scatter range exceeds the token sequence")
         }
-        let S = sBucket(forSeq: realLen)
-        guard realLen <= S else { throw DecoderError.tooLong(realLen) }
+    }
 
-        // 1) embed_multifunc: input_ids (1,S) -> inputs_embeds (1,S,featDim)
+    /// Step 1 of a decode — `embed_multifunc`: `input_ids` (1,S) -> `inputs_embeds` (1,S,featDim),
+    /// returned row-major with the tail past `tokenIds.count` filled from the pad id.
+    func embedTokens(_ tokenIds: [Int32], bucket S: Int) throws -> [Float] {
+        let realLen = tokenIds.count
+        guard realLen > 0, realLen <= S else { throw DecoderError.tooLong(realLen) }
         let ids = try MLMultiArray(shape: [1, NSNumber(value: S)], dataType: .int32)
         let idp = ids.dataPointer.bindMemory(to: Int32.self, capacity: S)
         for i in 0..<S { idp[i] = i < realLen ? tokenIds[i] : padTokenID }
@@ -124,9 +148,15 @@ internal final class GeneralMediaDecoder {
         guard let embArr = embOut.featureValue(for: "out")?.multiArrayValue else {
             throw DecoderError.noOutput
         }
-        let embedded = try CoreMLArrayReader.float32(
+        return try CoreMLArrayReader.float32(
             embArr, shape: [1, S, featDim], label: "media token embeddings")
+    }
 
+    /// Steps 2 and 3 of a decode: scatter the media `features` into a copy of `embedded`, then run
+    /// `decoder_embeds_multifunc` with the selector at the last real token.
+    func decodeEmbedded(_ embedded: [Float], tokenCount realLen: Int, features: [Float],
+                        scatterOffset: Int, bucket S: Int) throws -> [Float] {
+        let L = features.count / featDim
         // 2) copy embeds into a fresh (1,S,featDim) array and scatter the media features
         let embeds = try MLMultiArray(shape: [1, NSNumber(value: S), NSNumber(value: featDim)], dataType: .float32)
         let ep = embeds.dataPointer.bindMemory(to: Float.self, capacity: S * featDim)
@@ -213,7 +243,7 @@ internal struct AudioMasks {
         for c in 0..<C {
             let real = c < fullChunks ? cs : (c == fullChunks ? rem : 0)
             if real > 0 { for i in 0..<real { cm[c * cs + i] = 1.0 } }
-            rtok[c] = real > 0 ? (real - 1) / 2 + 1 : 0
+            rtok[c] = real > 0 ? Self.floorDivide(real - 1, by: 2) + 1 : 0
         }
         convMask = cm
 
@@ -227,9 +257,24 @@ internal struct AudioMasks {
             }
         }
         attnBias = bias
-        // reference pooled-token count: num_pooled = ((after_conv1) - 2)/2 + 1, after_conv1=(n-1)/2+1
-        let afterConv1 = (exactFrames - 1) / 2 + 1
-        realTokens = (afterConv1 - 2) / 2 + 1
+        realTokens = Self.pooledTokenCount(frames: exactFrames)
+    }
+
+    /// Python floor division for integers (`a // b`, `b > 0`): rounds toward negative infinity.
+    /// Swift's `/` truncates toward zero, so the two disagree whenever the numerator is negative —
+    /// which is exactly what a clip of one or two mel frames produces below.
+    static func floorDivide(_ a: Int, by b: Int) -> Int {
+        let quotient = a / b
+        return (a % b != 0 && a < 0) ? quotient - 1 : quotient
+    }
+
+    /// Pooled audio-token count the reference keeps for `frames` mel frames — its
+    /// `_get_feat_extract_output_lengths`: `after_conv1 = (n - 1) // 2 + 1`, then
+    /// `(after_conv1 - 2) // 2 + 1`, both Python floor divisions. One or two frames pool to ZERO
+    /// tokens (`(1 - 2) // 2 + 1 == 0`); truncating `/` would report one token that does not exist.
+    static func pooledTokenCount(frames: Int) -> Int {
+        let afterConv1 = floorDivide(frames - 1, by: 2) + 1
+        return floorDivide(afterConv1 - 2, by: 2) + 1
     }
 }
 
@@ -243,8 +288,8 @@ internal final class AudioCoreMLEncoderMasked {
     public static let frameBuckets = [200, 400, 800, 1600, 3200]
     let compiledURL: URL
     let computeUnits: MLComputeUnits
-    let lock = NSLock()   // guards the lazy cache for concurrent use
-    var models: [Int: MLModel] = [:]
+    /// Per-bucket functions, each loaded once on first use without blocking other buckets.
+    private let models = KeyedLoadCache<Int, MLModel>()
 
     public init(modelURL: URL, computeUnits: MLComputeUnits = .cpuAndGPU) throws {
         self.computeUnits = computeUnits
@@ -253,12 +298,12 @@ internal final class AudioCoreMLEncoderMasked {
 
     public enum EncoderError: Error { case noOutput, invalidInput(String) }
 
-    private func model(_ F: Int) throws -> MLModel {
-        lock.lock(); defer { lock.unlock() }
-        if let m = models[F] { return m }
-        let cfg = MLModelConfiguration(); cfg.computeUnits = computeUnits; cfg.functionName = "f\(F)"
-        let m = try MLModel(contentsOf: compiledURL, configuration: cfg)
-        models[F] = m; return m
+    /// The `f{F}` function for a frame bucket, loaded on first use.
+    func model(_ F: Int) throws -> MLModel {
+        try models.value(for: F) {
+            let cfg = MLModelConfiguration(); cfg.computeUnits = computeUnits; cfg.functionName = "f\(F)"
+            return try MLModel(contentsOf: compiledURL, configuration: cfg)
+        }
     }
 
     /// Returns the full-layout features (C*50 * 1024) row-major; caller truncates to `realTokens`.

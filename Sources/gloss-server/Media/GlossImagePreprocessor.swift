@@ -39,7 +39,12 @@ internal struct GlossImagePreprocessor {
         let sourceH = max(1, h), sourceW = max(1, w)
         let maxPixels = max(factor * factor, min(self.maxPixels, maxPixelsOverride ?? self.maxPixels))
         let minPixels = min(self.minPixels, maxPixels)
-        func roundF(_ x: Double) -> Int { Int((x / f).rounded()) * factor }
+        // Python `round()` — half to EVEN — exactly as the source processor's `smart_resize`.
+        // Swift's plain `.rounded()` rounds ties away from zero, which put every side of
+        // k*32+16 (k even: 400, 464, ..., 720, ...) on the wrong grid row: 720 / 32 = 22.5 is 22
+        // rows (704) in the source but 23 (736) with `.rounded()`. Only this initial rounding is
+        // half-to-even; the floor/ceil budget branches below match Python's floor/ceil.
+        func roundF(_ x: Double) -> Int { Int((x / f).rounded(.toNearestOrEven)) * factor }
         var hbar = max(factor, roundF(Double(sourceH)))
         var wbar = max(factor, roundF(Double(sourceW)))
         let sourcePixels = Double(sourceH) * Double(sourceW)

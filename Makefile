@@ -35,6 +35,9 @@ ACCESS_LOG ?= errors
 MAX_TOKENS ?= 32768
 DIMENSIONS ?=
 JINA_REFERENCE ?= ../GlossematicsCoreML/reference
+JINA_FP32_REFERENCE ?= reference/jina/fp32_reference.json
+JINA_TEXT_REFERENCE ?= reference/jina/text_reference.json
+JINA_READY_TIMEOUT ?= 900
 ORACLE ?=
 
 # bidirlm | jina | unknown, from the bundle manifest
@@ -117,13 +120,15 @@ dummy-bundle: ## regenerate the no-op fixture (needs TOKENIZER=<bundle>/tokenize
 	@test -n "$(TOKENIZER)" || { echo "error: set TOKENIZER to a BidirLM bundle's tokenizer directory"; exit 1; }
 	$(CONVERTER_PYTHON) Scripts/make_dummy_bundle.py --tokenizer "$(TOKENIZER)" --output "$(FIXTURE)" --force
 
-verify-jina: release ## Jina gates on BUNDLE: video goldens + HTTP parity (ORACLE=<old daemon URL> optional)
+verify-jina: release ## Jina gates on BUNDLE: Swift goldens + HTTP text/image/audio/video vs FP32 source refs (ORACLE=<url> optional extra)
 	$(RELEASE_BIN) --bundle "$(BUNDLE)" --check-config
 	GLOSS_JINA_BUNDLE="$(abspath $(BUNDLE))" GLOSS_JINA_REFERENCE="$(abspath $(JINA_REFERENCE))" \
 		GLOSS_PRODUCTION_BUNDLE="$(abspath $(BUNDLE))" \
 		swift test --filter "JinaFullModel|productionModelRetrievalEndToEnd"
-	cd Scripts && $(CONVERTER_PYTHON) smoke_jina.py --server-bin "$(RELEASE_BIN)" --bundle "$(abspath $(BUNDLE))" \
+	cd Scripts && "$(abspath $(CONVERTER_PYTHON))" smoke_jina.py --server-bin "$(RELEASE_BIN)" --bundle "$(abspath $(BUNDLE))" \
 		--output "$(abspath dist/jina-smoke)" --video-reference ../reference/jina/video_reference.json \
+		--fp32-reference "$(abspath $(JINA_FP32_REFERENCE))" --text-reference "$(abspath $(JINA_TEXT_REFERENCE))" \
+		--ready-timeout "$(JINA_READY_TIMEOUT)" \
 		$(if $(ORACLE),--oracle "$(ORACLE)",)
 
 run: build ## run gloss-server in the foreground (ALLOW_DUMMY=1 for the fixture; COMPUTE=ane|gpu|cpu)

@@ -169,3 +169,145 @@ private func expectGolden(_ values: [Float], dimensions: Int) {
             invFreqURL: root.appendingPathComponent("missing-rope.f32"))
     }
 }
+
+// MARK: - Video source-size cap
+
+/// A copy of the golden MP4 whose track header declares another frame size (and optionally a 90
+/// degree rotation). Only the container metadata changes, so it exercises the pre-decode size
+/// checks without needing a 4K or 8K encoder.
+private func goldenVideoDeclaring(width: UInt32, height: UInt32, rotated: Bool = false) throws -> Data {
+    var bytes = [UInt8](try Data(contentsOf: goldenFixture.deletingLastPathComponent()
+        .appendingPathComponent("golden-video.mp4")))
+    let tag = Array("tkhd".utf8)
+    let index = try #require((0..<(bytes.count - 4)).first { Array(bytes[$0..<($0 + 4)]) == tag })
+    try #require(bytes[index + 4] == 0, "expected a version-0 tkhd box")
+    func put(_ value: UInt32, at offset: Int) {
+        for shift in 0..<4 { bytes[offset + shift] = UInt8((value >> UInt32(24 - 8 * shift)) & 0xff) }
+    }
+    put(width << 16, at: index + 4 + 76)
+    put(height << 16, at: index + 4 + 80)
+    if rotated {   // matrix [a b u c d v x y w] for a 90 degree clockwise rotation
+        put(0, at: index + 4 + 40)
+        put(0x0001_0000, at: index + 4 + 44)
+        put(0xFFFF_0000, at: index + 4 + 52)
+        put(0, at: index + 4 + 56)
+    }
+    return Data(bytes)
+}
+
+private func withVideoFile<T>(_ data: Data, _ body: (URL) throws -> T) throws -> T {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gloss-cap-test-\(UUID().uuidString).mp4")
+    try data.write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+    return try body(url)
+}
+
+@Test func videoSourceSizeCapAdmitsDCI4KInEitherOrientationAndRejects8K() throws {
+    // Admitted: DCI 4K and UHD, landscape and portrait, and the square at the cap.
+    for (width, height) in [(4_096.0, 2_160.0), (2_160.0, 4_096.0), (3_840.0, 2_160.0),
+                            (2_160.0, 3_840.0), (4_096.0, 4_096.0), (64.0, 64.0), (1.0, 1.0)] {
+        let size = try VideoFrameDecoder.validateSourceSize(width: width, height: height)
+        #expect(size.width == Int(width) && size.height == Int(height))
+    }
+    // Rejected as too large: 5K, 8K in both orientations, one pixel over the edge, huge values.
+    for (width, height) in [(5_120.0, 2_880.0), (7_680.0, 4_320.0), (4_320.0, 7_680.0), (4_097.0, 100.0),
+                            (100.0, 4_097.0), (1e30, 1e30), (Double.greatestFiniteMagnitude, 10)] {
+        do {
+            _ = try VideoFrameDecoder.validateSourceSize(width: width, height: height)
+            Issue.record("\(width) x \(height) must exceed the source cap")
+        } catch let failure as VideoFrameDecoder.Failure {
+            guard case .frameTooLarge = failure else {
+                Issue.record("\(width) x \(height): expected frameTooLarge, got \(failure)")
+                continue
+            }
+            #expect("\(failure)".contains("DCI 4K"), "the message must explain the cap")
+        }
+    }
+    // Rejected as invalid: zero, negative, sub-pixel, and non-finite sizes — none may trap.
+    for (width, height) in [(0.0, 0.0), (-1.0, 100.0), (100.0, -5.0), (0.4, 100.0), (Double.nan, 100.0),
+                            (100.0, .infinity), (-Double.infinity, 100.0), (.nan, .nan)] {
+        do {
+            _ = try VideoFrameDecoder.validateSourceSize(width: width, height: height)
+            Issue.record("\(width) x \(height) must be an invalid frame size")
+        } catch let failure as VideoFrameDecoder.Failure {
+            guard case .invalidFrameSize = failure else {
+                Issue.record("\(width) x \(height): expected invalidFrameSize, got \(failure)")
+                continue
+            }
+        }
+    }
+    #expect(GlossVideoFile.maximumSourcePixels == 4_096 * 4_096)
+}
+
+@Test func oversizedVideoIsRejectedBeforeAnyDecodeWithAClear400() async throws {
+    let eightK = try goldenVideoDeclaring(width: 7_680, height: 4_320)
+    try withVideoFile(eightK) { url in
+        #expect(throws: VideoFrameDecoder.Failure.self) { _ = try VideoFrameDecoder.open(url) }
+        #expect(throws: VideoFrameDecoder.Failure.self) {
+            _ = try GlossVideoFile.extractFrames(url, maxPatches: 2_048, preprocessor: GlossImagePreprocessor())
+        }
+    }
+
+    let model = try await OmniSmall.load(from: goldenFixture)
+    for input in [OmniSmall.Input.videoData(eightK)] {
+        do {
+            _ = try await model.embedDocument(input)
+            Issue.record("an 8K video must be rejected")
+        } catch let error as OmniSmallError {
+            guard case let .invalidInput(reason) = error else {
+                Issue.record("expected invalidInput (HTTP 400), got \(error)")
+                continue
+            }
+            #expect(reason.contains("7680") && reason.contains("4320") && reason.contains("DCI 4K"), Comment(rawValue: reason))
+        }
+    }
+}
+
+@Test func dci4KVideoDeclarationIsAdmittedInEitherOrientation() throws {
+    let landscape = try goldenVideoDeclaring(width: 4_096, height: 2_160)
+    try withVideoFile(landscape) { url in
+        let source = try VideoFrameDecoder.open(url)
+        #expect(source.width == 4_096 && source.height == 2_160 && source.quarterTurns == 0)
+    }
+    // A portrait file stores its frames sideways and rotates them for display: the displayed size
+    // is what the cap applies to, and it is the same 4096 x 2160 either way.
+    let rotated = try goldenVideoDeclaring(width: 2_160, height: 4_096, rotated: true)
+    try withVideoFile(rotated) { url in
+        let source = try VideoFrameDecoder.open(url)
+        #expect(source.quarterTurns == 1)
+        #expect(source.width == 4_096 && source.height == 2_160)
+    }
+    let portrait = try goldenVideoDeclaring(width: 2_160, height: 4_096)
+    try withVideoFile(portrait) { url in
+        let source = try VideoFrameDecoder.open(url)
+        #expect(source.width == 2_160 && source.height == 4_096)
+    }
+}
+
+// MARK: - Short audio and the mel frontend
+
+@Test func wholeClipLogMelThrowsInsteadOfTrappingAndBidirLMMapsItToInvalidInput() throws {
+    let mel = try GlossMelFrontend()
+    for count in [0, 1, 199, 200] {   // reflect padding needs MORE than nFFT / 2 = 200 samples
+        do {
+            _ = try mel.wholeClipLogMel([Float](repeating: 0.1, count: count))
+            Issue.record("\(count) samples must be too short")
+        } catch GlossMelFrontend.MelError.audioTooShort(let reported) {
+            #expect(reported == count)
+        }
+    }
+    let (features, frames) = try mel.wholeClipLogMel([Float](repeating: 0.1, count: 201))
+    #expect(frames == 1 && features.count == mel.nMels)
+
+    // BidirLM keeps its own 100 ms minimum, and a mel-frontend failure of any kind reaches the
+    // same invalid-input path (HTTP 400) rather than a crash or a generic server error.
+    #expect(throws: BidirLMMediaInputs.Failure.self) {
+        _ = try BidirLMMediaInputs.audio([Float](repeating: 0.1, count: 150), frontend: mel)
+    }
+    #expect(throws: BidirLMMediaInputs.Failure.self) {
+        _ = try BidirLMMediaInputs.audio([], frontend: mel)
+    }
+    let prepared = try BidirLMMediaInputs.audio([Float](repeating: 0.1, count: 1_600), frontend: mel)
+    #expect(prepared.frames == 10)
+}

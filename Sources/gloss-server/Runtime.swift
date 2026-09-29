@@ -191,6 +191,10 @@ struct MetricsSnapshot: Sendable {
     var rowsByKind: [String: UInt64] = [:]
     var tokensByKind: [String: UInt64] = [:]
     var coalescedWaves: UInt64 = 0
+    /// Text waves that failed as a batch and were re-run one row at a time (Jina), and the rows
+    /// that still failed on their own.
+    var isolationRetries: UInt64 = 0
+    var isolationFailedRows: UInt64 = 0
     var longDocuments: UInt64 = 0
     var longTokens: UInt64 = 0
     var longSteps: UInt64 = 0
@@ -216,6 +220,10 @@ actor ServerMetrics {
         value.tokensByKind[kind, default: 0] &+= UInt64(max(0, tokens))
         if requests > 1 { value.coalescedWaves &+= 1 }
         value.lastInferenceUnix = Date().timeIntervalSince1970
+    }
+    func recordIsolation(failedRows: Int) {
+        value.isolationRetries &+= 1
+        value.isolationFailedRows &+= UInt64(max(0, failedRows))
     }
     func recordLong(tokens: Int, steps: Int) {
         value.longDocuments &+= 1

@@ -204,7 +204,17 @@ enum BidirLMMediaInputs {
         guard samples.count >= minimumSamples else {
             throw Failure.invalid("audio must be at least \(minimumSamples / 16) ms long")
         }
-        let (mel, frames) = frontend.wholeClipLogMel(samples)
+        // The length guard above already exceeds the frontend's own minimum, so a throw here is a
+        // defensive backstop: either way the caller gets the invalid-input path (HTTP 400), never a
+        // crash or a generic server error.
+        let mel: [Float], frames: Int
+        do {
+            (mel, frames) = try frontend.wholeClipLogMel(samples)
+        } catch GlossMelFrontend.MelError.audioTooShort {
+            throw Failure.invalid("audio must be at least \(minimumSamples / 16) ms long")
+        } catch {
+            throw Failure.invalid("audio could not be converted to mel features: \(error)")
+        }
         return PreparedAudio(mel: mel, frames: frames)
     }
 }

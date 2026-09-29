@@ -28,7 +28,8 @@ internal enum GlossVideoFile {
     }
 
     static let maximumDurationSeconds = 60.0
-    static let maximumSourcePixels = 16_777_216
+    /// Per-frame source pixel cap, shared with the decoder (see `VideoFrameDecoder.maximumSourceEdge`).
+    static let maximumSourcePixels = VideoFrameDecoder.maximumSourcePixels
     static let maximumSampledFrames = 32
     static let samplingFPS = 2.0
     static let referenceMinimumPixels = 262_144
@@ -56,7 +57,8 @@ internal enum GlossVideoFile {
             throw DecodeError.invalidDuration
         }
         let sourcePixels = height.multipliedReportingOverflow(by: width)
-        guard height > 0, width > 0, height <= 4_096, width <= 4_096,
+        guard height > 0, width > 0,
+              height <= VideoFrameDecoder.maximumSourceEdge, width <= VideoFrameDecoder.maximumSourceEdge,
               !sourcePixels.overflow, sourcePixels.partialValue <= maximumSourcePixels else {
             throw DecodeError.oversizedFrame
         }
@@ -125,21 +127,23 @@ internal enum GlossVideoFile {
 
     /// Decode, sample, and resize a video file the way the source processor sees it; see
     /// `VideoFrameDecoder` for the decode, color, and resize contract.
+    ///
+    /// `VideoFrameDecoder.open` enforces the per-frame source cap (and rejects a zero, negative, or
+    /// non-finite declared size) before this decodes anything. `checkCancellation` is polled through
+    /// the frame scan and decode so cancelled work stops early.
     static func extractFrames(_ url: URL, maxPatches: Int,
-                              preprocessor: GlossImagePreprocessor) throws -> (frames: [[UInt8]], h: Int, w: Int) {
+                              preprocessor: GlossImagePreprocessor,
+                              checkCancellation: (() throws -> Void)? = nil) throws -> (frames: [[UInt8]], h: Int, w: Int) {
         let source = try VideoFrameDecoder.open(url)
-        guard source.width > 0, source.height > 0, source.width <= 4_096, source.height <= 4_096,
-              source.width * source.height <= maximumSourcePixels else {
-            throw DecodeError.oversizedFrame
-        }
-        let total = try VideoFrameDecoder.frameCount(source)
+        let total = try VideoFrameDecoder.frameCount(source, checkCancellation: checkCancellation)
         let fps = VideoFrameDecoder.averageFrameRate(source, frames: total)
         guard fps.isFinite, fps > 0 else { throw DecodeError.invalidFrameRate }
         let framePlan = try plan(totalFrames: total, sourceFPS: fps,
                                  height: source.height, width: source.width,
                                  maxPatches: maxPatches, preprocessor: preprocessor)
         let frames = try VideoFrameDecoder.frames(source, indices: framePlan.frameIndices,
-                                                  width: framePlan.width, height: framePlan.height)
+                                                  width: framePlan.width, height: framePlan.height,
+                                                  checkCancellation: checkCancellation)
         return (frames, framePlan.height, framePlan.width)
     }
 
@@ -315,8 +319,8 @@ internal final class VisionCoreMLEncoderMasked {
     public let patchBuckets: [Int]
     let compiledURL: URL
     let computeUnits: MLComputeUnits
-    let lock = NSLock()   // guards the lazy cache for concurrent use
-    var models: [Int: MLModel] = [:]
+    /// Per-bucket functions, each loaded once on first use without blocking other buckets.
+    private let models = KeyedLoadCache<Int, MLModel>()
 
     public init(modelURL: URL, computeUnits: MLComputeUnits = .cpuAndGPU,
                 patchBuckets: [Int] = VisionCoreMLEncoderMasked.defaultPatchBuckets) throws {
@@ -333,20 +337,23 @@ internal final class VisionCoreMLEncoderMasked {
 
     public func bucket(forPatches L: Int) -> Int { patchBuckets.first { $0 >= L } ?? patchBuckets.last! }
 
-    private func model(_ N: Int) throws -> MLModel {
-        lock.lock(); defer { lock.unlock() }
-        if let m = models[N] { return m }
-        let cfg = MLModelConfiguration(); cfg.computeUnits = computeUnits; cfg.functionName = "f\(N)"
-        let m = try MLModel(contentsOf: compiledURL, configuration: cfg)
-        models[N] = m; return m
+    /// The `f{N}` function for a patch bucket, loaded on first use.
+    func model(_ N: Int) throws -> MLModel {
+        try models.value(for: N) {
+            let cfg = MLModelConfiguration(); cfg.computeUnits = computeUnits; cfg.functionName = "f\(N)"
+            return try MLModel(contentsOf: compiledURL, configuration: cfg)
+        }
     }
 
     /// `pixelValues` = (L·pixelDim), `posEmbeds` = (L·hidden), `cos`/`sin` = (L·ropeDim). Returns the
     /// full-layout merged features (N/4 · 1024); caller keeps the first `merged` tokens.
+    /// `forcedBucket` runs the same patches through a specific declared bucket instead of the
+    /// smallest that fits (startup verification compares every bucket on one image).
     public func encode(pixelValues: [Float], pixelDim: Int, posEmbeds: [Float], hidden: Int,
-                       cos: [Float], sin: [Float], ropeDim: Int, patches L: Int) throws -> [Float] {
-        let N = bucket(forPatches: L)
-        guard L > 0, L <= N else {
+                       cos: [Float], sin: [Float], ropeDim: Int, patches L: Int,
+                       bucket forcedBucket: Int? = nil) throws -> [Float] {
+        let N = forcedBucket ?? bucket(forPatches: L)
+        guard L > 0, L <= N, forcedBucket == nil || patchBuckets.contains(N) else {
             throw EncoderError.invalidInput("image exceeds the largest patch bucket")
         }
         guard pixelDim == 1_536, hidden == 1_024, ropeDim == 64,
@@ -380,10 +387,102 @@ internal final class VisionCoreMLEncoderMasked {
     }
 }
 
+/// Encoder-ready tensors for one image or video: everything the vision tower and the shared decoder
+/// consume, computed on the CPU with no Core ML involvement. Splitting this out of the embedders is
+/// what lets the daemon do image decode, video decode, resize, patchify, and position math on a
+/// bounded CPU executor while the single accelerator lane stays free for inference. Because
+/// `embed(...)` is literally `infer(prepare(...))`, the split path and the direct path feed Core ML
+/// the same arrays by construction.
+internal struct PreparedVisionInputs: Sendable {
+    /// Patch rows fed to the ViT: `gh*gw` for an image, `t*gh*gw` for a video.
+    let patches: Int
+    /// (patches × 1536) processor-normalized patch pixels in the merger's 2×2-block order.
+    let pixelValues: [Float]
+    /// (patches × hidden) bilinear-interpolated learned positions.
+    let posEmbeds: [Float]
+    /// (patches × ropeDim) rotary tables.
+    let ropeCos: [Float]
+    let ropeSin: [Float]
+    /// Temporal groups and patches per group: `(1, patches)` for an image; `(t, gh*gw)` for a video,
+    /// whose attention is block-diagonal per group.
+    let temporalGroups: Int
+    let groupPatches: Int
+    /// Real merged tokens (`patches / 4`) the decoder receives.
+    let mergedTokens: Int
+    /// `prefix + placeholder × mergedTokens + suffix` for the requested retrieval role.
+    let tokenIDs: [Int32]
+    /// Where the merged features are scattered into `tokenIDs` (the role's prefix length).
+    let scatterOffset: Int
+}
+
+/// Host-side image preparation: bounded decode, smart-resize, patchify, positions, and prompt ids.
+/// A pure `Sendable` value with no Core ML state, so it can run on any thread.
+internal struct ImageInputPreparer: Sendable {
+    let preprocessor: GlossImagePreprocessor
+    let positions: VisionPositions
+    let tokens: MediaTokens
+    /// Largest converted patch bucket; larger images are downscaled to fit it.
+    let maxPatches: Int
+
+    /// Image file -> encoder inputs for ANY resolution: smart-resize to the model grid (capped to
+    /// the largest converted bucket so big images downscale gracefully instead of being unsupported),
+    /// patchify. Non-factor-aligned native sizes carry the documented CoreGraphics resample caveat.
+    func prepare(imageURL: URL, prompt: GlossTextEmbedder.Prompt) throws -> PreparedVisionInputs {
+        try prepare(cgImage: try GlossImagePreprocessor.loadCGImage(imageURL), prompt: prompt)
+    }
+
+    /// In-memory image data -> encoder inputs (no temporary file).
+    func prepare(imageData: Data, prompt: GlossTextEmbedder.Prompt) throws -> PreparedVisionInputs {
+        try prepare(cgImage: try GlossImagePreprocessor.loadCGImage(imageData), prompt: prompt)
+    }
+
+    func prepare(cgImage: CGImage, prompt: GlossTextEmbedder.Prompt) throws -> PreparedVisionInputs {
+        let (hbar, wbar) = preprocessor.smartResize(
+            h: cgImage.height,
+            w: cgImage.width,
+            maxPixelsOverride: maxPatches * 256)
+        let rgb = try preprocessor.resizedRGB(cgImage, w: wbar, h: hbar)
+        return try prepare(rgb: rgb, h: hbar, w: wbar, prompt: prompt)
+    }
+
+    /// Raw RGB (h*w*3, h/w factor-aligned) -> encoder inputs. Exact (no resample).
+    /// Requires (h/16)*(w/16) ≤ maxPatches.
+    func prepare(rgb: [UInt8], h: Int, w: Int, prompt: GlossTextEmbedder.Prompt) throws -> PreparedVisionInputs {
+        let (pv, gh, gw) = try preprocessor.pixelValues(rgb: rgb, h: h, w: w)
+        guard gh * gw <= maxPatches else {
+            throw VisionCoreMLEncoderMasked.EncoderError.invalidInput("image exceeds the largest patch bucket")
+        }
+        return try prepare(pixelValues: pv, gh: gh, gw: gw, prompt: prompt)
+    }
+
+    /// `pixelValues` = (gh·gw · pixelDim) row-major (processor output).
+    func prepare(pixelValues: [Float], gh: Int, gw: Int, prompt: GlossTextEmbedder.Prompt) throws -> PreparedVisionInputs {
+        let product = gh.multipliedReportingOverflow(by: gw)
+        guard gh > 0, gw > 0,
+              gh.isMultiple(of: positions.mergeSize),
+              gw.isMultiple(of: positions.mergeSize),
+              !product.overflow, product.partialValue <= maxPatches,
+              pixelValues.count == product.partialValue * preprocessor.featuresPerPatch,
+              pixelValues.allSatisfy(\.isFinite) else {
+            throw VisionCoreMLEncoderMasked.EncoderError.invalidInput("image pixels or grid are invalid")
+        }
+        let L = product.partialValue
+        let (pe, cosv, sinv, merged) = positions.compute(gh: gh, gw: gw)
+        return PreparedVisionInputs(
+            patches: L, pixelValues: pixelValues, posEmbeds: pe, ropeCos: cosv, ropeSin: sinv,
+            temporalGroups: 1, groupPatches: L, mergedTokens: merged,
+            tokenIDs: tokens.ids(prompt: prompt, count: merged),
+            scatterOffset: tokens.resolvedPrefix(for: prompt).count)
+    }
+}
+
 /// True arbitrary-resolution image embedder: runtime-position masked ViT + the unified general
 /// decoder. Given pixel_values (processor output) for grid (gh,gw), produces the L2-normalized
 /// embedding. The URL/data methods perform bounded decode, smart-resize, and patchify;
 /// `embed(pixelValues:gh:gw:)` also permits independent tensor-path verification.
+///
+/// Every `embed(...)` is `infer(preparer.prepare(...))`: the CPU half lives in ``ImageInputPreparer``
+/// (usable off the accelerator) and this class owns only the Core ML half.
 internal final class GlossImageEmbedderMasked {
     /// The image prompt wrapper (`prefix + placeholder × merged + suffix`). Bundles supply the
     /// manifest's resolved ids; direct construction passes a ``MediaTokens`` preset.
@@ -395,6 +494,26 @@ internal final class GlossImageEmbedderMasked {
     public let encoder: VisionCoreMLEncoderMasked
     public let decoder: GeneralMediaDecoder
     public let preprocessor: GlossImagePreprocessor
+    /// The CPU half of the pipeline, safe to use from any thread.
+    public let preparer: ImageInputPreparer
+
+    /// Assembles an embedder from already-built parts. The daemon uses this to share ONE
+    /// `GeneralMediaDecoder` (and its loaded functions) across the image, audio, and video pipelines.
+    public init(visionModelURL: URL, positions: VisionPositions, decoder: GeneralMediaDecoder,
+                tokens: MediaTokens, featureDim: Int = 1024,
+                patchBuckets: [Int] = VisionCoreMLEncoderMasked.defaultPatchBuckets,
+                preprocessor: GlossImagePreprocessor = GlossImagePreprocessor(),
+                encoderUnits: MLComputeUnits = .cpuAndGPU) throws {
+        self.tokens = tokens
+        self.featureDim = featureDim
+        self.preprocessor = preprocessor
+        self.positions = positions
+        self.decoder = decoder
+        encoder = try VisionCoreMLEncoderMasked(modelURL: visionModelURL, computeUnits: encoderUnits, patchBuckets: patchBuckets)
+        preparer = ImageInputPreparer(
+            preprocessor: preprocessor, positions: positions, tokens: tokens,
+            maxPatches: encoder.patchBuckets.last ?? 0)
+    }
 
     /// `encoderUnits`: `.cpuAndGPU` (default) is the recommended choice — BOTH more accurate (fp32
     /// accumulation ~0.99996 vs the ANE's fp16 ~0.9995 end-to-end) AND much faster (measured 219ms vs
@@ -404,22 +523,22 @@ internal final class GlossImageEmbedderMasked {
     /// `.cpuAndNeuralEngine` together with `encoderUnits: .cpuAndNeuralEngine` for a TRUE full-ANE
     /// deployment (encoder + decoder both on the ANE) — measured end-to-end cos 0.999495, above the
     /// model's bf16 floor (lowest-power, GPU-free; slower than the hybrid default).
-    public init(visionModelURL: URL, embedModelURL: URL, decoderModelURL: URL,
-                metaURL: URL, posTableURL: URL, invFreqURL: URL,
-                tokens: MediaTokens, featureDim: Int = 1024,
-                patchBuckets: [Int] = VisionCoreMLEncoderMasked.defaultPatchBuckets,
-                padTokenID: Int32 = 0,
-                preprocessor: GlossImagePreprocessor = GlossImagePreprocessor(),
-                encoderUnits: MLComputeUnits = .cpuAndGPU, decoderUnits: MLComputeUnits? = nil,
-                sequenceBuckets: [Int] = GeneralMediaDecoder.defaultSequenceBuckets) throws {
-        self.tokens = tokens
-        self.featureDim = featureDim
-        self.preprocessor = preprocessor
-        positions = try VisionPositions(metaURL: metaURL, posTableURL: posTableURL, invFreqURL: invFreqURL)
-        encoder = try VisionCoreMLEncoderMasked(modelURL: visionModelURL, computeUnits: encoderUnits, patchBuckets: patchBuckets)
-        decoder = try GeneralMediaDecoder(embedModelURL: embedModelURL, decoderModelURL: decoderModelURL,
-                                          computeUnits: decoderUnits, featDim: featureDim,
-                                          padTokenID: padTokenID, sequenceBuckets: sequenceBuckets)
+    public convenience init(visionModelURL: URL, embedModelURL: URL, decoderModelURL: URL,
+                            metaURL: URL, posTableURL: URL, invFreqURL: URL,
+                            tokens: MediaTokens, featureDim: Int = 1024,
+                            patchBuckets: [Int] = VisionCoreMLEncoderMasked.defaultPatchBuckets,
+                            padTokenID: Int32 = 0,
+                            preprocessor: GlossImagePreprocessor = GlossImagePreprocessor(),
+                            encoderUnits: MLComputeUnits = .cpuAndGPU, decoderUnits: MLComputeUnits? = nil,
+                            sequenceBuckets: [Int] = GeneralMediaDecoder.defaultSequenceBuckets) throws {
+        try self.init(
+            visionModelURL: visionModelURL,
+            positions: try VisionPositions(metaURL: metaURL, posTableURL: posTableURL, invFreqURL: invFreqURL),
+            decoder: try GeneralMediaDecoder(embedModelURL: embedModelURL, decoderModelURL: decoderModelURL,
+                                             computeUnits: decoderUnits, featDim: featureDim,
+                                             padTokenID: padTokenID, sequenceBuckets: sequenceBuckets),
+            tokens: tokens, featureDim: featureDim, patchBuckets: patchBuckets,
+            preprocessor: preprocessor, encoderUnits: encoderUnits)
     }
 
     /// Convenience: the 3 host-side resources (`meta.json`, `pos_embed_table.f32`, `rope_inv_freq.f32`,
@@ -443,7 +562,7 @@ internal final class GlossImageEmbedderMasked {
     }
 
     /// The largest image (in mel-patch terms) the converted ViT buckets hold exactly.
-    public var maxPatches: Int { encoder.patchBuckets.last! }
+    public var maxPatches: Int { preparer.maxPatches }
 
     /// Raw RGB (h*w*3, h/w factor-aligned) -> embedding. Exact (no resample) — the full host path.
     /// Requires (h/16)*(w/16) ≤ maxPatches; use `embed(imageURL:)` for arbitrary sizes (it downscales).
@@ -452,62 +571,38 @@ internal final class GlossImageEmbedderMasked {
     /// modality for retrieval).
     public func embed(rgb: [UInt8], h: Int, w: Int, dim: Int? = nil,
                       prompt: GlossTextEmbedder.Prompt = .none) throws -> [Float] {
-        let (pv, gh, gw) = try preprocessor.pixelValues(rgb: rgb, h: h, w: w)
-        guard gh * gw <= maxPatches else {
-            throw VisionCoreMLEncoderMasked.EncoderError.invalidInput("image exceeds the largest patch bucket")
-        }
-        return try embed(pixelValues: pv, gh: gh, gw: gw, dim: dim, prompt: prompt)
+        try infer(try preparer.prepare(rgb: rgb, h: h, w: w, prompt: prompt), dim: dim)
     }
 
-    /// Image file -> embedding for ANY resolution: smart-resize to the model grid (capped to the
-    /// largest converted bucket so big images downscale gracefully instead of being unsupported),
-    /// patchify, run. Non-factor-aligned native sizes carry the documented CoreGraphics resample caveat.
+    /// Image file -> embedding for ANY resolution (see ``ImageInputPreparer/prepare(imageURL:prompt:)``).
     public func embed(imageURL: URL, dim: Int? = nil,
                       prompt: GlossTextEmbedder.Prompt = .none) throws -> [Float] {
-        let cg = try GlossImagePreprocessor.loadCGImage(imageURL)
-        return try embed(cgImage: cg, dim: dim, prompt: prompt)
+        try infer(try preparer.prepare(imageURL: imageURL, prompt: prompt), dim: dim)
     }
 
     /// In-memory image data -> embedding. This avoids a temporary file for callers that receive
     /// image bytes over a local transport.
     public func embed(imageData: Data, dim: Int? = nil,
                       prompt: GlossTextEmbedder.Prompt = .none) throws -> [Float] {
-        let cg = try GlossImagePreprocessor.loadCGImage(imageData)
-        return try embed(cgImage: cg, dim: dim, prompt: prompt)
-    }
-
-    private func embed(cgImage: CGImage, dim: Int?,
-                       prompt: GlossTextEmbedder.Prompt) throws -> [Float] {
-        let (hbar, wbar) = preprocessor.smartResize(
-            h: cgImage.height,
-            w: cgImage.width,
-            maxPixelsOverride: maxPatches * 256)
-        let rgb = try preprocessor.resizedRGB(cgImage, w: wbar, h: hbar)
-        return try embed(rgb: rgb, h: hbar, w: wbar, dim: dim, prompt: prompt)
+        try infer(try preparer.prepare(imageData: imageData, prompt: prompt), dim: dim)
     }
 
     /// `pixelValues` = (gh·gw · pixelDim) row-major (processor output). Returns the embedding.
     public func embed(pixelValues: [Float], gh: Int, gw: Int, dim: Int? = nil,
                       prompt: GlossTextEmbedder.Prompt = .none) throws -> [Float] {
-        let product = gh.multipliedReportingOverflow(by: gw)
-        guard gh > 0, gw > 0,
-              gh.isMultiple(of: positions.mergeSize),
-              gw.isMultiple(of: positions.mergeSize),
-              !product.overflow, product.partialValue <= maxPatches,
-              pixelValues.count == product.partialValue * preprocessor.featuresPerPatch,
-              pixelValues.allSatisfy(\.isFinite) else {
-            throw VisionCoreMLEncoderMasked.EncoderError.invalidInput("image pixels or grid are invalid")
-        }
-        let L = product.partialValue
-        let pixelDim = preprocessor.featuresPerPatch
-        let (pe, cosv, sinv, merged) = positions.compute(gh: gh, gw: gw)
-        let full = try encoder.encode(pixelValues: pixelValues, pixelDim: pixelDim,
-                                      posEmbeds: pe, hidden: positions.hidden,
-                                      cos: cosv, sin: sinv, ropeDim: positions.ropeDim, patches: L)
-        let used = Array(full[0 ..< (merged * featureDim)])
-        let ids = tokens.ids(prompt: prompt, count: merged)
-        let emb = try decoder.decode(tokenIds: ids, features: used,
-                                     scatterOffset: tokens.resolvedPrefix(for: prompt).count)
+        try infer(try preparer.prepare(pixelValues: pixelValues, gh: gh, gw: gw, prompt: prompt), dim: dim)
+    }
+
+    /// The Core ML half: ViT prediction, merged-feature slice, scatter into the prompt, decoder
+    /// prediction, optional Matryoshka truncation. Nothing here touches the CPU-side decode.
+    public func infer(_ prepared: PreparedVisionInputs, dim: Int? = nil) throws -> [Float] {
+        let full = try encoder.encode(pixelValues: prepared.pixelValues, pixelDim: preprocessor.featuresPerPatch,
+                                      posEmbeds: prepared.posEmbeds, hidden: positions.hidden,
+                                      cos: prepared.ropeCos, sin: prepared.ropeSin, ropeDim: positions.ropeDim,
+                                      patches: prepared.patches)
+        let used = Array(full[0 ..< (prepared.mergedTokens * featureDim)])
+        let emb = try decoder.decode(tokenIds: prepared.tokenIDs, features: used,
+                                     scatterOffset: prepared.scatterOffset)
         if let d = dim { return matryoshka(emb, dim: d) }
         return emb
     }
@@ -524,8 +619,8 @@ internal final class VideoCoreMLEncoderMasked {
     public let patchBuckets: [Int]
     let compiledURL: URL
     let computeUnits: MLComputeUnits
-    let lock = NSLock()   // guards the lazy cache for concurrent use
-    var models: [Int: MLModel] = [:]
+    /// Per-bucket functions, each loaded once on first use without blocking other buckets.
+    private let models = KeyedLoadCache<Int, MLModel>()
 
     public init(modelURL: URL, computeUnits: MLComputeUnits = .cpuAndGPU,
                 patchBuckets: [Int] = VideoCoreMLEncoderMasked.defaultPatchBuckets) throws {
@@ -541,24 +636,27 @@ internal final class VideoCoreMLEncoderMasked {
     public enum EncoderError: Error { case noOutput, tooLarge(Int), invalidInput(String) }
     public func bucket(forPatches L: Int) -> Int { patchBuckets.first { $0 >= L } ?? patchBuckets.last! }
 
-    private func model(_ N: Int) throws -> MLModel {
-        lock.lock(); defer { lock.unlock() }
-        if let m = models[N] { return m }
-        let cfg = MLModelConfiguration(); cfg.computeUnits = computeUnits; cfg.functionName = "f\(N)"
-        let m = try MLModel(contentsOf: compiledURL, configuration: cfg)
-        models[N] = m; return m
+    /// The `f{N}` function for a patch bucket, loaded on first use.
+    func model(_ N: Int) throws -> MLModel {
+        try models.value(for: N) {
+            let cfg = MLModelConfiguration(); cfg.computeUnits = computeUnits; cfg.functionName = "f\(N)"
+            return try MLModel(contentsOf: compiledURL, configuration: cfg)
+        }
     }
 
     /// `t` frames, `fp` = patches per frame (gh·gw); L = t·fp. Returns full-layout features (N/4·1024).
+    /// `forcedBucket` runs the same patches through a specific declared bucket instead of the
+    /// smallest that fits (startup verification compares every bucket on one clip).
     public func encode(pixelValues: [Float], pixelDim: Int, posEmbeds: [Float], hidden: Int,
-                       cos: [Float], sin: [Float], ropeDim: Int, frames t: Int, framePatches fp: Int) throws -> [Float] {
+                       cos: [Float], sin: [Float], ropeDim: Int, frames t: Int, framePatches fp: Int,
+                       bucket forcedBucket: Int? = nil) throws -> [Float] {
         let product = t.multipliedReportingOverflow(by: fp)
         guard t > 0, fp > 0, !product.overflow else {
             throw EncoderError.invalidInput("video frame geometry is invalid")
         }
         let L = product.partialValue
-        let N = bucket(forPatches: L)
-        guard L <= N else { throw EncoderError.tooLarge(L) }
+        let N = forcedBucket ?? bucket(forPatches: L)
+        guard L <= N, forcedBucket == nil || patchBuckets.contains(N) else { throw EncoderError.tooLarge(L) }
         guard pixelDim == 1_536, hidden == 1_024, ropeDim == 64,
               pixelValues.count == L * pixelDim,
               posEmbeds.count == L * hidden,
@@ -594,9 +692,61 @@ internal final class VideoCoreMLEncoderMasked {
     }
 }
 
+/// Host-side video preparation: bounded frame decode and sampling, patchify, positions, prompt ids.
+/// A pure `Sendable` value with no Core ML state, so it can run on any thread.
+internal struct VideoInputPreparer: Sendable {
+    let preprocessor: GlossImagePreprocessor
+    let positions: VisionPositions
+    let tokens: MediaTokens
+    /// Largest converted patch bucket; sampling and resize are planned to fit it.
+    let maxPatches: Int
+
+    /// Video file -> encoder inputs with the bounded, aspect-preserving 2 fps serving profile.
+    /// Sampling and resize are not bit-matched to the reference, but the resulting frame path is
+    /// independently validated against the source model. `checkCancellation` is polled between
+    /// frames so a cancelled request stops decoding instead of finishing seconds of wasted work.
+    func prepare(videoURL: URL, prompt: GlossTextEmbedder.Prompt,
+                 checkCancellation: (() throws -> Void)? = nil) throws -> PreparedVisionInputs {
+        let input = try GlossVideoFile.extractFrames(
+            videoURL, maxPatches: maxPatches, preprocessor: preprocessor, checkCancellation: checkCancellation)
+        try checkCancellation?()
+        return try prepare(frames: input.frames, h: input.h, w: input.w, prompt: prompt)
+    }
+
+    /// Raw RGB frames (count = 2·t, each h*w*3, h/w factor-aligned) -> encoder inputs. (Frame
+    /// *sampling* is the caller's job.)
+    func prepare(frames: [[UInt8]], h: Int, w: Int, prompt: GlossTextEmbedder.Prompt) throws -> PreparedVisionInputs {
+        let (pv, t, gh, gw) = try preprocessor.videoPixelValues(frames: frames, h: h, w: w)
+        return try prepare(pixelValues: pv, t: t, gh: gh, gw: gw, prompt: prompt)
+    }
+
+    /// `pixelValues` = (t·gh·gw · pixelDim) row-major (video processor output); grid (t,gh,gw).
+    func prepare(pixelValues: [Float], t: Int, gh: Int, gw: Int,
+                 prompt: GlossTextEmbedder.Prompt) throws -> PreparedVisionInputs {
+        let spatial = gh.multipliedReportingOverflow(by: gw)
+        let temporal = t.multipliedReportingOverflow(by: spatial.partialValue)
+        guard t > 0, gh > 0, gw > 0,
+              gh.isMultiple(of: positions.mergeSize),
+              gw.isMultiple(of: positions.mergeSize),
+              !spatial.overflow, !temporal.overflow,
+              temporal.partialValue <= maxPatches,
+              pixelValues.count == temporal.partialValue * preprocessor.featuresPerPatch,
+              pixelValues.allSatisfy(\.isFinite) else {
+            throw VideoCoreMLEncoderMasked.EncoderError.invalidInput("video pixels or grid are invalid")
+        }
+        let (pe, cosv, sinv, merged) = positions.computeVideo(t: t, gh: gh, gw: gw)
+        return PreparedVisionInputs(
+            patches: temporal.partialValue, pixelValues: pixelValues, posEmbeds: pe, ropeCos: cosv, ropeSin: sinv,
+            temporalGroups: t, groupPatches: spatial.partialValue, mergedTokens: merged,
+            tokenIDs: tokens.ids(prompt: prompt, count: merged),
+            scatterOffset: tokens.resolvedPrefix(for: prompt).count)
+    }
+}
+
 /// On-device VIDEO embedder: bounded frame patchify, block-diagonal ViT, and general decoder.
 /// `embed(videoURL:)` uses AVFoundation frame extraction; `embed(pixelValues:...)` accepts prepared
-/// tensors for converter parity tests.
+/// tensors for converter parity tests. As with images, every `embed(...)` is
+/// `infer(preparer.prepare(...))`.
 internal final class GlossVideoEmbedderMasked {
     /// The video prompt wrapper (`prefix + placeholder × merged + suffix`).
     public let tokens: MediaTokens
@@ -607,25 +757,44 @@ internal final class GlossVideoEmbedderMasked {
     public let encoder: VideoCoreMLEncoderMasked
     public let decoder: GeneralMediaDecoder
     public let preprocessor: GlossImagePreprocessor
+    /// The CPU half of the pipeline, safe to use from any thread.
+    public let preparer: VideoInputPreparer
 
-    /// `encoderUnits`/`decoderUnits` as `GlossImageEmbedderMasked`: default = GPU ViT + adaptive decoder;
-    /// pass both as `.cpuAndNeuralEngine` for a true full-ANE deployment (above the bf16 floor, slower).
-    public init(visionModelURL: URL, embedModelURL: URL, decoderModelURL: URL,
-                metaURL: URL, posTableURL: URL, invFreqURL: URL,
+    /// Assembles an embedder from already-built parts (see ``GlossImageEmbedderMasked/init(visionModelURL:positions:decoder:tokens:featureDim:patchBuckets:preprocessor:encoderUnits:)``).
+    public init(visionModelURL: URL, positions: VisionPositions, decoder: GeneralMediaDecoder,
                 tokens: MediaTokens, featureDim: Int = 1024,
                 patchBuckets: [Int] = VideoCoreMLEncoderMasked.defaultPatchBuckets,
-                padTokenID: Int32 = 0,
                 preprocessor: GlossImagePreprocessor = GlossImagePreprocessor(),
-                encoderUnits: MLComputeUnits = .cpuAndGPU, decoderUnits: MLComputeUnits? = nil,
-                sequenceBuckets: [Int] = GeneralMediaDecoder.defaultSequenceBuckets) throws {
+                encoderUnits: MLComputeUnits = .cpuAndGPU) throws {
         self.tokens = tokens
         self.featureDim = featureDim
         self.preprocessor = preprocessor
-        positions = try VisionPositions(metaURL: metaURL, posTableURL: posTableURL, invFreqURL: invFreqURL)
+        self.positions = positions
+        self.decoder = decoder
         encoder = try VideoCoreMLEncoderMasked(modelURL: visionModelURL, computeUnits: encoderUnits, patchBuckets: patchBuckets)
-        decoder = try GeneralMediaDecoder(embedModelURL: embedModelURL, decoderModelURL: decoderModelURL,
-                                          computeUnits: decoderUnits, featDim: featureDim,
-                                          padTokenID: padTokenID, sequenceBuckets: sequenceBuckets)
+        preparer = VideoInputPreparer(
+            preprocessor: preprocessor, positions: positions, tokens: tokens,
+            maxPatches: encoder.patchBuckets.last ?? 0)
+    }
+
+    /// `encoderUnits`/`decoderUnits` as `GlossImageEmbedderMasked`: default = GPU ViT + adaptive decoder;
+    /// pass both as `.cpuAndNeuralEngine` for a true full-ANE deployment (above the bf16 floor, slower).
+    public convenience init(visionModelURL: URL, embedModelURL: URL, decoderModelURL: URL,
+                            metaURL: URL, posTableURL: URL, invFreqURL: URL,
+                            tokens: MediaTokens, featureDim: Int = 1024,
+                            patchBuckets: [Int] = VideoCoreMLEncoderMasked.defaultPatchBuckets,
+                            padTokenID: Int32 = 0,
+                            preprocessor: GlossImagePreprocessor = GlossImagePreprocessor(),
+                            encoderUnits: MLComputeUnits = .cpuAndGPU, decoderUnits: MLComputeUnits? = nil,
+                            sequenceBuckets: [Int] = GeneralMediaDecoder.defaultSequenceBuckets) throws {
+        try self.init(
+            visionModelURL: visionModelURL,
+            positions: try VisionPositions(metaURL: metaURL, posTableURL: posTableURL, invFreqURL: invFreqURL),
+            decoder: try GeneralMediaDecoder(embedModelURL: embedModelURL, decoderModelURL: decoderModelURL,
+                                             computeUnits: decoderUnits, featDim: featureDim,
+                                             padTokenID: padTokenID, sequenceBuckets: sequenceBuckets),
+            tokens: tokens, featureDim: featureDim, patchBuckets: patchBuckets,
+            preprocessor: preprocessor, encoderUnits: encoderUnits)
     }
 
     /// Convenience: vision resources loaded by name from `resourcesDir` (see `export_vision_swift_refs.py`).
@@ -651,8 +820,7 @@ internal final class GlossVideoEmbedderMasked {
     /// frame-patchify -> block-diagonal ViT -> general decoder. (Frame *sampling* is the caller's job.)
     public func embed(frames: [[UInt8]], h: Int, w: Int, dim: Int? = nil,
                       prompt: GlossTextEmbedder.Prompt = .none) throws -> [Float] {
-        let (pv, t, gh, gw) = try preprocessor.videoPixelValues(frames: frames, h: h, w: w)
-        return try embed(pixelValues: pv, t: t, gh: gh, gw: gw, dim: dim, prompt: prompt)
+        try infer(try preparer.prepare(frames: frames, h: h, w: w, prompt: prompt), dim: dim)
     }
 
     /// Video file -> embedding with the bounded, aspect-preserving 2 fps serving profile.
@@ -660,9 +828,7 @@ internal final class GlossVideoEmbedderMasked {
     /// independently validated against the source model.
     public func embed(videoURL: URL, dim: Int? = nil,
                       prompt: GlossTextEmbedder.Prompt = .none) throws -> [Float] {
-        let input = try GlossVideoFile.extractFrames(
-            videoURL, maxPatches: encoder.patchBuckets.last!, preprocessor: preprocessor)
-        return try embed(frames: input.frames, h: input.h, w: input.w, dim: dim, prompt: prompt)
+        try infer(try preparer.prepare(videoURL: videoURL, prompt: prompt), dim: dim)
     }
 
     /// Explicit fixed-square profile for direct extraction and model tests.
@@ -683,27 +849,19 @@ internal final class GlossVideoEmbedderMasked {
     /// `pixelValues` = (t·gh·gw · pixelDim) row-major (video processor output); grid (t,gh,gw).
     public func embed(pixelValues: [Float], t: Int, gh: Int, gw: Int, dim: Int? = nil,
                       prompt: GlossTextEmbedder.Prompt = .none) throws -> [Float] {
-        let spatial = gh.multipliedReportingOverflow(by: gw)
-        let temporal = t.multipliedReportingOverflow(by: spatial.partialValue)
-        guard t > 0, gh > 0, gw > 0,
-              gh.isMultiple(of: positions.mergeSize),
-              gw.isMultiple(of: positions.mergeSize),
-              !spatial.overflow, !temporal.overflow,
-              temporal.partialValue <= encoder.patchBuckets.last!,
-              pixelValues.count == temporal.partialValue * preprocessor.featuresPerPatch,
-              pixelValues.allSatisfy(\.isFinite) else {
-            throw VideoCoreMLEncoderMasked.EncoderError.invalidInput("video pixels or grid are invalid")
-        }
-        let fp = spatial.partialValue
-        let pixelDim = preprocessor.featuresPerPatch
-        let (pe, cosv, sinv, merged) = positions.computeVideo(t: t, gh: gh, gw: gw)
-        let full = try encoder.encode(pixelValues: pixelValues, pixelDim: pixelDim, posEmbeds: pe,
-                                      hidden: positions.hidden, cos: cosv, sin: sinv,
-                                      ropeDim: positions.ropeDim, frames: t, framePatches: fp)
-        let used = Array(full[0 ..< (merged * featureDim)])
-        let ids = tokens.ids(prompt: prompt, count: merged)
-        let emb = try decoder.decode(tokenIds: ids, features: used,
-                                     scatterOffset: tokens.resolvedPrefix(for: prompt).count)
+        try infer(try preparer.prepare(pixelValues: pixelValues, t: t, gh: gh, gw: gw, prompt: prompt), dim: dim)
+    }
+
+    /// The Core ML half: block-diagonal ViT prediction, merged-feature slice, scatter into the
+    /// prompt, decoder prediction, optional Matryoshka truncation.
+    public func infer(_ prepared: PreparedVisionInputs, dim: Int? = nil) throws -> [Float] {
+        let full = try encoder.encode(pixelValues: prepared.pixelValues, pixelDim: preprocessor.featuresPerPatch,
+                                      posEmbeds: prepared.posEmbeds, hidden: positions.hidden,
+                                      cos: prepared.ropeCos, sin: prepared.ropeSin, ropeDim: positions.ropeDim,
+                                      frames: prepared.temporalGroups, framePatches: prepared.groupPatches)
+        let used = Array(full[0 ..< (prepared.mergedTokens * featureDim)])
+        let emb = try decoder.decode(tokenIds: prepared.tokenIDs, features: used,
+                                     scatterOffset: prepared.scatterOffset)
         if let d = dim { return matryoshka(emb, dim: d) }
         return emb
     }

@@ -16,7 +16,7 @@
   },
   "source": {
     "repo": "jinaai/jina-embeddings-v5-omni-small",
-    "revision": "41a20a1e1f56dad91e3a55d52ac6dc13007d67a5"
+    "revision": "87f7a45d1ae0265843f8569c47fb53847cb193c3"
   },
   "converter": {
     "name": "dummy-noop",

@@ -28,6 +28,8 @@ struct Arguments: Sendable {
     var allowDummy = false
     /// Default output size (Jina Matryoshka); BidirLM accepts only its native 2048.
     var dimensions: Int?
+    /// Jina: what startup proves before `/ready` (BidirLM always audits placement).
+    var startupVerification: JinaStartupVerification = .full
     /// Flags given on the command line, for family-specific validation after detection.
     var explicit: Set<String> = []
 
@@ -61,6 +63,12 @@ struct Arguments: Sendable {
                     throw ArgumentError("--dimensions expects a positive integer")
                 }
                 parsed.dimensions = value
+            case "--startup-verification":
+                let raw = try nextValue()
+                guard let mode = JinaStartupVerification(rawValue: raw) else {
+                    throw ArgumentError("--startup-verification must be full|basic")
+                }
+                parsed.startupVerification = mode
             case "--model-name", "-m":
                 let value = try nextValue()
                 guard !value.isEmpty, value.count <= 256,
@@ -121,6 +129,9 @@ struct Arguments: Sendable {
     jina-embeddings-v5-omni-small.
       --compute ane|gpu|cpu (ane)  BidirLM: operator-selected Core ML placement; never falls back
       --dimensions N  Jina: default Matryoshka size (1024; 32|64|128|256|512|1024). BidirLM: 2048 only
+      --startup-verification full|basic (full)  Jina: full loads and runs every Core ML function
+          once, cross-checked, before /ready (slower start; a fault keeps the server not ready);
+          basic runs one warm text embedding
       --port N (11435)  --model-name ID
       --max-batch N (2048)  --max-queue-requests N (128)  --max-queue-items N (8192)
       --max-request-tokens N (131072)  --batch-window-ms N (2.0)  --keep-warm-seconds N (60)
@@ -291,6 +302,9 @@ func blockingAsync<T: Sendable>(_ operation: @escaping @Sendable () async throws
 }
 
 func makeBidirLMApp(arguments: Arguments, bundleURL: URL) throws -> ServingApp {
+    if arguments.explicit.contains("--startup-verification") {
+        throw ArgumentError("--startup-verification applies to Jina bundles; BidirLM audits placement at every start")
+    }
     if let dimensions = arguments.dimensions, dimensions != BidirLMContract.dimension {
         throw ArgumentError("--dimensions must be \(BidirLMContract.dimension) for BidirLM bundles (no Matryoshka truncation)")
     }
@@ -423,6 +437,7 @@ func makeJinaApp(arguments: Arguments, bundleURL: URL) throws -> ServingApp {
         print("space[\(defaultDimensions.rawValue)]: \(model.space(for: defaultDimensions))")
         print("dimensions: \(supported.map(String.init).joined(separator: ",")) (default \(defaultDimensions.rawValue))")
         print("modalities: \(modalities.joined(separator: ","))")
+        print("startup-verification: \(arguments.startupVerification.rawValue)")
         exit(0)
     }
 
@@ -441,9 +456,16 @@ func makeJinaApp(arguments: Arguments, bundleURL: URL) throws -> ServingApp {
         maxConnections: arguments.maxConnections,
         ioTimeoutSeconds: arguments.ioTimeoutSeconds,
         shutdownGraceSeconds: arguments.shutdownGraceSeconds)
+    // Upload scratch directories a crashed or killed process left behind, before the listener
+    // opens. Housekeeping only: it never throws and never blocks startup.
+    let sweep = OmniSmall.sweepStaleTemporaryMedia()
+    timestamped("temp media sweep: examined=\(sweep.examined) removed=\(sweep.removedDirectories) bytes=\(sweep.removedBytes)"
+        + (sweep.failed > 0 ? " failed=\(sweep.failed)" : ""), error: sweep.failed > 0)
+
     let state = RuntimeState()
     let metrics = ServerMetrics()
     let lane = AcceleratorLane()
+    let startupStatus = JinaStartupStatus(mode: arguments.startupVerification)
     let admission = AdmissionGate(maxRequests: config.maxQueueRequests, maxItems: config.maxQueueItems)
     let tokenizers = try JinaTokenizerPool(bundle: bundle)
     let store = JinaModelStore(model: model)
@@ -451,32 +473,21 @@ func makeJinaApp(arguments: Arguments, bundleURL: URL) throws -> ServingApp {
                                   windowMilliseconds: config.batchWindowMilliseconds)
     let service = JinaEmbeddingsService(
         config: config, bundle: bundle, store: store, tokenizers: tokenizers, state: state,
-        admission: admission, batcher: batcher, lane: lane, metrics: metrics, docsContext: docsContext,
-        startedAt: Int(Date().timeIntervalSince1970), isFixture: isDummy)
+        admission: admission, batcher: batcher, lane: lane, metrics: metrics, startup: startupStatus,
+        docsContext: docsContext, startedAt: Int(Date().timeIntervalSince1970), isFixture: isDummy)
 
-    @Sendable func warm() async throws {
-        try await lane.acquire()
-        do {
-            _ = try await model.embedDocument(.text("warm"), dimensions: .d1024)
-            await lane.release()
-            await metrics.recordInference()
-        } catch {
-            await lane.release()
-            throw error
-        }
-    }
+    @Sendable func warm() async throws { try await JinaStartup.warm(model: model, lane: lane, metrics: metrics) }
     return ServingApp(
         modelID: bundle.manifest.modelID,
         isDummy: isDummy,
-        banner: "gloss-server \(BuildInfo.version) model=\(bundle.manifest.modelID) family=\(ModelFamily.jinaOmniSmall.rawValue)\(isDummy ? " fixture=dummy-coreml" : "") dimensions=\(defaultDimensions.rawValue) batch-window=\(arguments.batchWindowMS)ms",
+        banner: "gloss-server \(BuildInfo.version) model=\(bundle.manifest.modelID) family=\(ModelFamily.jinaOmniSmall.rawValue)\(isDummy ? " fixture=dummy-coreml" : "") dimensions=\(defaultDimensions.rawValue) batch-window=\(arguments.batchWindowMS)ms startup-verification=\(arguments.startupVerification.rawValue) chip=\"\(HardwareIdentity.chip)\" macos=\(HardwareIdentity.macOS)",
         state: state,
         metrics: metrics,
         route: { await service.route($0) },
         startup: {
-            let started = ContinuousClock.now
-            try await warm()
-            let seconds = elapsedMilliseconds(ContinuousClock.now - started) / 1000
-            return "ready: validated bundle, text inference warmed in \(String(format: "%.1f", seconds))s; modalities=\(modalities.joined(separator: ","))"
+            try await JinaStartup.run(
+                mode: arguments.startupVerification, model: model, lane: lane, metrics: metrics,
+                status: startupStatus, modalities: modalities)
         },
         startKeepWarm: {
             guard config.keepWarmSeconds > 0 else { return nil }

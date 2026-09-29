@@ -15,6 +15,9 @@ import Foundation
 /// * Frames are resized with an antialiased separable bicubic filter (a = -0.5, support scaled by
 ///   the downscale factor, pixel-center mapping) and rounded to 8 bits: torchvision's
 ///   `resize(..., BICUBIC, antialias=True)` on uint8 frames.
+/// * The SOURCE frame size is capped before anything is decoded (see ``maximumSourceEdge``), the
+///   video counterpart of the image path's 40-megapixel header check: a small compressed upload
+///   must not be able to force an unbounded frame decode.
 enum VideoFrameDecoder {
     enum Failure: Error, CustomStringConvertible {
         case noVideoTrack
@@ -22,6 +25,10 @@ enum VideoFrameDecoder {
         case tooManyFrames(Int)
         case unsupportedTransform
         case frameMissing(Int)
+        /// The declared frame size is zero, negative, non-finite, or rounds to less than one pixel.
+        case invalidFrameSize(width: Double, height: Double)
+        /// The displayed (or coded) frame exceeds the per-frame source cap.
+        case frameTooLarge(width: Int, height: Int)
 
         var description: String {
             switch self {
@@ -30,8 +37,48 @@ enum VideoFrameDecoder {
             case let .tooManyFrames(limit): "video has more than \(limit) frames"
             case .unsupportedTransform: "video display transform is not a 0/90/180/270 degree rotation"
             case let .frameMissing(index): "video frame \(index) could not be decoded"
+            case let .invalidFrameSize(width, height):
+                "video declares an invalid frame size (\(width) × \(height)); width and height must be positive finite pixel counts"
+            case let .frameTooLarge(width, height):
+                "video frames are \(width) × \(height); the maximum source frame is "
+                    + "\(VideoFrameDecoder.maximumSourceEdge) pixels on either edge and "
+                    + "\(VideoFrameDecoder.maximumSourcePixels / 1_000_000) megapixels "
+                    + "(DCI 4K, 4096 × 2160, is accepted in either orientation; 8K is not)"
             }
         }
+    }
+
+    /// Per-frame SOURCE cap: at most 4096 pixels on either edge and 4096 × 4096 = 16,777,216 pixels.
+    ///
+    /// * It admits every common 4K delivery format in EITHER orientation — DCI 4K (4096 × 2160,
+    ///   8.8 MP), UHD (3840 × 2160, 8.3 MP), and the same rotated 90 degrees for portrait phone
+    ///   video — and rejects 5K (5120 × 2880) and 8K (7680 × 4320, 33 MP).
+    /// * The serving profile spends the converted tower's whole 2048-patch budget on at most 32
+    ///   sampled frames, so every source frame is downscaled to roughly a megapixel or less; source
+    ///   pixels beyond 4K buy no embedding quality. They only cost decode time and memory, because
+    ///   Y'CbCr -> RGB runs per pixel in Double at source resolution and each decoded frame is held
+    ///   at that resolution while it is resized.
+    /// * The edge cap is symmetric, so it is unaffected by the display rotation.
+    static let maximumSourceEdge = 4_096
+    static let maximumSourcePixels = 16_777_216
+
+    /// Validate a declared frame size (in pixels) against the source cap BEFORE any decoding. Takes
+    /// `Double` because `AVAssetTrack.naturalSize` is a `CGSize`; a hostile container can declare
+    /// zero, negative, NaN, or infinite dimensions, and converting those to `Int` would trap the
+    /// whole server. Returns the rounded integer size.
+    static func validateSourceSize(width: Double, height: Double) throws -> (width: Int, height: Int) {
+        guard width.isFinite, height.isFinite, width.rounded() >= 1, height.rounded() >= 1 else {
+            throw Failure.invalidFrameSize(width: width, height: height)
+        }
+        let edge = Double(maximumSourceEdge)
+        let widest = max(width.rounded(), height.rounded())
+        // Compared in Double first: a huge finite value must be rejected before the Int conversion.
+        guard widest <= edge,
+              width.rounded() * height.rounded() <= Double(maximumSourcePixels) else {
+            let clamp = { (value: Double) -> Int in Int(min(value.rounded(), Double(Int32.max))) }
+            throw Failure.frameTooLarge(width: clamp(width), height: clamp(height))
+        }
+        return (Int(width.rounded()), Int(height.rounded()))
     }
 
     struct Track {
@@ -57,8 +104,11 @@ enum VideoFrameDecoder {
         case (0, -1, 1, 0): turns = 3
         default: throw Failure.unsupportedTransform
         }
+        // Validate the declared size before anything is decoded or converted to Int. The decoded
+        // buffer's real size is checked again before its RGB copy is allocated (`rgbFrame`), since
+        // a crafted container can declare one size and encode another.
         let natural = track.naturalSize
-        let w = Int(natural.width.rounded()), h = Int(natural.height.rounded())
+        let (w, h) = try validateSourceSize(width: Double(natural.width), height: Double(natural.height))
         return Track(asset: asset, track: track, width: turns % 2 == 0 ? w : h, height: turns % 2 == 0 ? h : w,
                      quarterTurns: turns)
     }
@@ -73,8 +123,9 @@ enum VideoFrameDecoder {
         return nominal.isFinite && nominal > 0 ? nominal : 0
     }
 
-    /// Number of video samples, without decoding them.
-    static func frameCount(_ source: Track) throws -> Int {
+    /// Number of video samples, without decoding them. `checkCancellation` is polled per sample so
+    /// a cancelled request stops scanning.
+    static func frameCount(_ source: Track, checkCancellation: (() throws -> Void)? = nil) throws -> Int {
         let reader = try AVAssetReader(asset: source.asset)
         let output = AVAssetReaderTrackOutput(track: source.track, outputSettings: nil)
         output.alwaysCopiesSampleData = false
@@ -83,6 +134,7 @@ enum VideoFrameDecoder {
         guard reader.startReading() else { throw Failure.readerFailed(String(describing: reader.error)) }
         var count = 0
         while let sample = output.copyNextSampleBuffer() {
+            try checkCancellation?()
             count += CMSampleBufferGetNumSamples(sample)
             if count > maximumFrames { reader.cancelReading(); throw Failure.tooManyFrames(maximumFrames) }
         }
@@ -91,8 +143,9 @@ enum VideoFrameDecoder {
     }
 
     /// Decode the frames at `indices` (decode order, ascending, may repeat) as displayed RGB,
-    /// resized to `width` x `height`.
-    static func frames(_ source: Track, indices: [Int], width: Int, height: Int) throws -> [[UInt8]] {
+    /// resized to `width` x `height`. `checkCancellation` is polled per sample.
+    static func frames(_ source: Track, indices: [Int], width: Int, height: Int,
+                       checkCancellation: (() throws -> Void)? = nil) throws -> [[UInt8]] {
         let format = source.track.formatDescriptions.first.map { $0 as! CMFormatDescription }
         let extensions = format.flatMap { CMFormatDescriptionGetExtensions($0) as? [String: Any] } ?? [:]
         let fullRange = (extensions[kCMFormatDescriptionExtension_FullRangeVideo as String] as? Bool) ?? false
@@ -115,6 +168,7 @@ enum VideoFrameDecoder {
         var index = 0
         while index <= last, let sample = output.copyNextSampleBuffer() {
             defer { index += 1 }
+            try checkCancellation?()
             guard wanted.contains(index) else { continue }
             guard let buffer = CMSampleBufferGetImageBuffer(sample) else { throw Failure.frameMissing(index) }
             var (rgb, w, h) = try rgbFrame(buffer, matrix: matrix, fullRange: fullRange)
@@ -147,6 +201,8 @@ enum VideoFrameDecoder {
         CVPixelBufferLockBaseAddress(buffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
         let w = CVPixelBufferGetWidthOfPlane(buffer, 0), h = CVPixelBufferGetHeightOfPlane(buffer, 0)
+        // The decoder's actual buffer, not the declared size, decides the allocation below.
+        _ = try validateSourceSize(width: Double(w), height: Double(h))
         guard let yBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 0),
               let cBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 1) else {
             throw Failure.readerFailed("frame has no pixel data")

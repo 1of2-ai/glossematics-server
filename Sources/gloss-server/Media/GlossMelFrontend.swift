@@ -63,10 +63,12 @@ internal struct GlossMelFrontend {
     /// untruncated waveform (the processor passes `padding=True, truncation=False`): centered STFT
     /// with numpy/torch reflect padding at both ends, `samples / hop` frames (the final STFT frame
     /// is dropped), log10 power mel, dynamic range clipped to 8 below the clip maximum, then
-    /// `(x + 4) / 4`. Returns (128 x frames row-major, frames). Requires `samples.count > nFFT / 2`.
-    func wholeClipLogMel(_ audio: [Float]) -> ([Float], Int) {
+    /// `(x + 4) / 4`. Returns (128 x frames row-major, frames). Throws `MelError.audioTooShort` unless
+    /// `samples.count > nFFT / 2`: the reflect padding needs that many samples, and a violated
+    /// precondition here would crash the whole daemon on a hostile or truncated upload.
+    func wholeClipLogMel(_ audio: [Float]) throws -> ([Float], Int) {
         let p = nFFT / 2, n = audio.count
-        precondition(n > p, "clip is shorter than the analysis half-window")
+        guard n > p else { throw MelError.audioTooShort(n) }
         let frames = n / hop
         var padded = [Float](repeating: 0, count: n + 2 * p)
         for j in 0..<p { padded[j] = audio[p - j] }

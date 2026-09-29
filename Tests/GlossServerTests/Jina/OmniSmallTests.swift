@@ -453,10 +453,32 @@ private actor FakeOmniSmallBackend: OmniSmallBackend {
     }
     try OmniSmallInputLimits.validateDecodedAudio(sampleCount: 480_000)
     #expect(throws: OmniSmallBackendError.self) {
-        try OmniSmallInputLimits.validateDecodedAudio(sampleCount: 159)
-    }
-    #expect(throws: OmniSmallBackendError.self) {
         try OmniSmallInputLimits.validateDecodedAudio(sampleCount: 480_001)
+    }
+}
+
+/// One or two mel frames pool to ZERO audio tokens in the reference, so the floor is three frames
+/// (480 samples, 30 ms). 160 samples (one frame) used to be accepted.
+@Test func omniSmallAudioMinimumIsThreeMelFrames() throws {
+    #expect(OmniSmallInputLimits.minimumAudioSamples == 480)
+    for samples in [0, 1, 159, 160, 320, 479] {
+        do {
+            try OmniSmallInputLimits.validateDecodedAudio(sampleCount: samples)
+            Issue.record("\(samples) samples must be rejected")
+        } catch let error as OmniSmallBackendError {
+            guard case let .invalidInput(reason) = error else {
+                Issue.record("expected invalidInput, got \(error)")
+                continue
+            }
+            #expect(reason.contains("480") && reason.contains("30 ms"), Comment(rawValue: reason))
+        }
+    }
+    for samples in [480, 481, 639, 640, 16_000, 480_000] {
+        try OmniSmallInputLimits.validateDecodedAudio(sampleCount: samples)
+    }
+    // Every accepted length yields at least one pooled token.
+    for samples in [480, 481, 639, 640] {
+        #expect(AudioMasks.pooledTokenCount(frames: samples / 160) >= 1)
     }
 }
 
@@ -478,10 +500,23 @@ private actor FakeOmniSmallBackend: OmniSmallBackend {
 
     let model = try await OmniSmall.load(from: fixture.root, dimensions: .d256)
     #expect(model.dimensions == .d256)
-    // The space identity is pinned to the SDK daemon's formula (an independent recomputation
-    // gives this value), so vectors indexed by it stay comparable. A change here is a vector-space
-    // migration. The video file recipe is versioned separately (`OmniSmall.videoRecipe`).
-    #expect(model.space == "glossematics:omni-small:sha256:7a66937354bcb59e95fe4076760f3c8360b7f9f657e9ea1d64d100d12219a1ba")
+    // Every space ID is pinned here (an independent recomputation of the semantic string over
+    // revision 87f7a45d... gives these values). The formula matches the SDK daemon's, but the
+    // source revision moved from 41a20a1e to 87f7a45d, so none of these equal the IDs of earlier
+    // builds. A change here is a vector-space migration. The video file recipe is versioned
+    // separately (`OmniSmall.videoRecipe`).
+    #expect(model.space == "glossematics:omni-small:sha256:5b91ad2cc1420b56f69b7af8abf5197e8a5d4268bb897d325caf9d5e42d9b226")
+    let pinnedSpaces: [OmniSmall.Dimensions: String] = [
+        .d32: "glossematics:omni-small:sha256:036037bf0bd73c6b278d8268c8c34daebeeed1d7f8b024effddd7b0d5ee5999a",
+        .d64: "glossematics:omni-small:sha256:2987e04de5354fe38307ff4c9d43dcbaa1d11b3a5ebb38b23c7b42fbc490ba74",
+        .d128: "glossematics:omni-small:sha256:b7ae7daeee531a23ccc091d83020a5031580c420fce36e7db6978a7a7a0cd2df",
+        .d256: "glossematics:omni-small:sha256:5b91ad2cc1420b56f69b7af8abf5197e8a5d4268bb897d325caf9d5e42d9b226",
+        .d512: "glossematics:omni-small:sha256:ce0f5aa8164f1b9579e7fd95ad52cdfbd4f48c8e86fd5c4d0734d82c88a7b4fd",
+        .d1024: "glossematics:omni-small:sha256:40ef09cf246a8c05eca644978333c7bb63aeec83cb7dd9a01d85be334c0f00f9",
+    ]
+    for (dimensions, space) in pinnedSpaces {
+        #expect(model.space(for: dimensions) == space)
+    }
 
     let alias = FileManager.default.temporaryDirectory
         .appendingPathComponent("omni-small-alias-\(UUID().uuidString).bundle")
@@ -607,6 +642,44 @@ private actor FakeOmniSmallBackend: OmniSmallBackend {
             return
         }
         #expect(reason.contains("checksum mismatch"))
+    }
+}
+
+@Test func omniSmallRefusesBundlesPinnedToAnyOtherSourceRevision() async throws {
+    let fixture = try OmniSmallFixture()
+    defer { fixture.remove() }
+    let manifestURL = fixture.root.appendingPathComponent("manifest.json")
+    var manifest = try GlossModelBundle(url: fixture.root).manifest
+    #expect(manifest.source?.revision == "87f7a45d1ae0265843f8569c47fb53847cb193c3")
+
+    // The pre-re-pin revision no longer resolves on the Hub and is a different space: one
+    // identity per binary, so it must be refused with an actionable message, not accepted.
+    manifest.source?.revision = "41a20a1e1f56dad91e3a55d52ac6dc13007d67a5"
+    try JSONEncoder().encode(manifest).write(to: manifestURL)
+    do {
+        _ = try await OmniSmall.load(from: fixture.root)
+        Issue.record("a bundle pinned to the pre-re-pin revision must be refused")
+    } catch let error as OmniSmallError {
+        guard case let .invalidBundle(reason) = error else {
+            Issue.record("unexpected error: \(error)")
+            return
+        }
+        #expect(reason.contains("87f7a45d1ae0265843f8569c47fb53847cb193c3"))
+        #expect(reason.contains("41a20a1e1f56dad91e3a55d52ac6dc13007d67a5"))
+        #expect(reason.contains("repin_bundle_source.py"))
+    }
+
+    manifest.source = nil
+    try JSONEncoder().encode(manifest).write(to: manifestURL)
+    do {
+        _ = try await OmniSmall.load(from: fixture.root)
+        Issue.record("a bundle without a source pin must be refused")
+    } catch let error as OmniSmallError {
+        guard case let .invalidBundle(reason) = error else {
+            Issue.record("unexpected error: \(error)")
+            return
+        }
+        #expect(reason.contains("no source"))
     }
 }
 
@@ -903,7 +976,7 @@ private struct OmniSmallFixture {
             matryoshkaDimensions: [32, 64, 128, 256, 512, 1_024],
             source: .init(
                 repo: "jinaai/jina-embeddings-v5-omni-small",
-                revision: "41a20a1e1f56dad91e3a55d52ac6dc13007d67a5"),
+                revision: "87f7a45d1ae0265843f8569c47fb53847cb193c3"),
             prompts: .init(query: "Query: ", document: "Document: "),
             tokens: .init(
                 padID: 151_643,

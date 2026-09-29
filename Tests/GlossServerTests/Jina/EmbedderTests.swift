@@ -123,6 +123,85 @@ import Testing
     #expect(decoded.allSatisfy { $0.isFinite })
 }
 
+/// Writes float32 PCM with one waveform per channel to a temporary WAV and decodes it back with
+/// `GlossAudioFile.decode16kMono`. The WAV is assembled by hand (RIFF, IEEE-float format tag) so the
+/// frame count is exact: `AVAudioFile`'s writer can drop a mono file's last buffer, which would
+/// make two encodings of the same signal differ in length for reasons unrelated to the decoder.
+private func decodeMultichannel(rate: Double, channels waves: [[Float]]) throws -> [Float] {
+    let frames = waves[0].count, channelCount = waves.count
+    var wav = Data()
+    func put32(_ value: UInt32) { withUnsafeBytes(of: value.littleEndian) { wav.append(contentsOf: $0) } }
+    func put16(_ value: UInt16) { withUnsafeBytes(of: value.littleEndian) { wav.append(contentsOf: $0) } }
+    let dataBytes = frames * channelCount * 4
+    wav.append(contentsOf: Array("RIFF".utf8)); put32(UInt32(36 + dataBytes))
+    wav.append(contentsOf: Array("WAVE".utf8)); wav.append(contentsOf: Array("fmt ".utf8)); put32(16)
+    put16(3); put16(UInt16(channelCount)); put32(UInt32(rate)); put32(UInt32(rate) * UInt32(channelCount * 4))
+    put16(UInt16(channelCount * 4)); put16(32)
+    wav.append(contentsOf: Array("data".utf8)); put32(UInt32(dataBytes))
+    for index in 0..<frames {
+        for channel in 0..<channelCount { put32(waves[channel][index].bitPattern) }
+    }
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gloss-downmix-\(UUID().uuidString).wav")
+    defer { try? FileManager.default.removeItem(at: url) }
+    try wav.write(to: url)
+    return try GlossAudioFile.decode16kMono(url)
+}
+
+private func tone(_ frequency: Float, amplitude: Float, rate: Float, count: Int) -> [Float] {
+    (0..<count).map { amplitude * sinf(2 * .pi * frequency * Float($0) / rate) }
+}
+
+/// The source loads audio with librosa `mono=True`, which AVERAGES channels. AVAudioConverter's
+/// default N -> 1 conversion keeps only the left channel, so a clip with a different voice per side
+/// embedded as one voice.
+@Test func multichannelAudioIsAveragedToMonoNotLeftOnly() throws {
+    // 16 kHz, no resampling: the mean is the only arithmetic, so the result is exact.
+    let left = tone(440, amplitude: 0.5, rate: 16_000, count: 16_000)
+    let right = tone(880, amplitude: 0.25, rate: 16_000, count: 16_000)
+    let stereo = try decodeMultichannel(rate: 16_000, channels: [left, right])
+    #expect(stereo.count == 16_000)
+    for index in 0..<stereo.count {
+        #expect(abs(stereo[index] - (left[index] + right[index]) / 2) < 1e-6, "sample \(index)")
+    }
+    #expect(zip(stereo, left).map { abs($0 - $1) }.max() ?? 0 > 0.1, "must not be the left channel alone")
+
+    // Any channel count: three channels average as a third each.
+    let third = tone(1_320, amplitude: 0.3, rate: 16_000, count: 16_000)
+    let trio = try decodeMultichannel(rate: 16_000, channels: [left, right, third])
+    for index in stride(from: 0, to: trio.count, by: 97) {
+        #expect(abs(trio[index] - (left[index] + right[index] + third[index]) / 3) < 1e-6)
+    }
+
+    // A single channel passes through untouched: bit-exact, same length.
+    let mono = try decodeMultichannel(rate: 16_000, channels: [left])
+    #expect(mono == left, "mono \(mono.count) samples vs \(left.count) written; first diff \(zip(mono, left).enumerated().first { $0.element.0 != $0.element.1 }?.offset ?? -1)")
+}
+
+@Test func stereoIsAveragedBeforeResamplingAndMatchesTheMonoEquivalent() throws {
+    let rate: Float = 48_000
+    let voice = tone(500, amplitude: 0.4, rate: rate, count: 48_000)
+    // Opposite phase: the mean is silence. Left-only would leave a 0.4-amplitude tone.
+    let cancelling = try decodeMultichannel(rate: 48_000, channels: [voice, voice.map { -$0 }])
+    #expect((cancelling.map { abs($0) }.max() ?? 1) < 1e-3, "opposite channels must cancel in the mean")
+
+    // Identical channels are the same signal as mono, through the same mono -> mono resample.
+    let both = try decodeMultichannel(rate: 48_000, channels: [voice, voice])
+    let single = try decodeMultichannel(rate: 48_000, channels: [voice])
+    #expect(both.count == single.count, "stereo \(both.count) vs mono \(single.count) samples")
+    #expect(both == single)
+    #expect(both.count > 15_500 && both.count <= 16_000)
+
+    // Different voices: the result is the mean's resample, distinct from either side's.
+    let other = tone(1_200, amplitude: 0.4, rate: rate, count: 48_000)
+    let mixed = try decodeMultichannel(rate: 48_000, channels: [voice, other])
+    let leftOnly = try decodeMultichannel(rate: 48_000, channels: [voice])
+    let meanFirst = try decodeMultichannel(rate: 48_000, channels: [zip(voice, other).map { ($0 + $1) / 2 }])
+    #expect(zip(mixed, leftOnly).map { abs($0 - $1) }.max() ?? 0 > 0.1)
+    #expect(mixed.count == meanFirst.count, "mixed \(mixed.count) vs mean-first \(meanFirst.count) samples")
+    #expect(zip(mixed, meanFirst).map { abs($0 - $1) }.max() ?? 1 < 1e-4)
+}
+
 /// Converter-artifact parity tests are explicitly skipped when their source artifacts are absent.
 /// The checked-in fixture tests and production-bundle verification do not depend on these paths.
 private let root: URL = {
@@ -643,6 +722,132 @@ private func makeSyntheticMP4(frames: Int, size: Int) -> URL? {
     #expect(throws: GlossImagePreprocessor.ImageError.self) {
         _ = try prep.videoPixelValues(frames: [[UInt8](repeating: 0, count: 128 * 128 * 3)], h: 128, w: 128)  // odd frame count
     }
+}
+
+/// The reference's `_get_feat_extract_output_lengths` for the audio tower, written with Python's
+/// FLOOR division: `after_conv1 = (n - 1) // 2 + 1`, then `(after_conv1 - 2) // 2 + 1`. Recomputed
+/// here with `floor` on doubles so it shares no code with the implementation under test.
+private func pythonAudioTokens(frames n: Int) -> Int {
+    func floorDiv(_ a: Int, _ b: Int) -> Int { Int((Double(a) / Double(b)).rounded(.down)) }
+    let afterConv1 = floorDiv(n - 1, 2) + 1
+    return floorDiv(afterConv1 - 2, 2) + 1
+}
+
+@Test func audioPooledTokenCountFollowsPythonFloorDivisionForEveryFrameCount() {
+    // Values produced by the Python formula itself (a spot table, including the 1- and 2-frame
+    // cases where truncating division reports one token that the reference does not have).
+    let table: [(frames: Int, tokens: Int)] = [
+        (1, 0), (2, 0), (3, 1), (4, 1), (5, 1), (6, 1), (7, 2), (8, 2), (9, 2), (10, 2), (11, 3), (12, 3),
+        (199, 50), (200, 50), (201, 50), (399, 100), (400, 100), (401, 100),
+        (3_000, 750), (3_199, 800), (3_200, 800),
+    ]
+    for (frames, tokens) in table {
+        #expect(AudioMasks.pooledTokenCount(frames: frames) == tokens, "frames \(frames)")
+        #expect(AudioMasks(exactFrames: frames, bucketFrames: AudioMasks.bucket(forFrames: frames)).realTokens == tokens,
+                "AudioMasks frames \(frames)")
+    }
+    // Every frame count the daemon can see (1...3200): identical to the independent recomputation,
+    // and the whole table sums to the value Python produces for it (1,280,000).
+    var total = 0
+    for frames in 1...3_200 {
+        let expected = pythonAudioTokens(frames: frames)
+        #expect(AudioMasks.pooledTokenCount(frames: frames) == expected, "frames \(frames)")
+        total += expected
+    }
+    #expect(total == 1_280_000)
+    // And the floor helper itself, on the negative numerators that break truncation.
+    #expect(AudioMasks.floorDivide(-1, by: 2) == -1 && AudioMasks.floorDivide(-2, by: 2) == -1)
+    #expect(AudioMasks.floorDivide(-3, by: 2) == -2 && AudioMasks.floorDivide(3, by: 2) == 1)
+    #expect(AudioMasks.floorDivide(0, by: 2) == 0 && AudioMasks.floorDivide(7, by: 2) == 3)
+}
+
+@Test func audioPreparationRejectsClipsThatPoolToNoTokens() throws {
+    let mel = try GlossMelFrontend()
+    let preparer = AudioInputPreparer(mel: mel, tokens: .jinaV5OmniSmallAudio)
+    // ceil(n / 160) frames: up to 320 samples is at most 2 frames = zero tokens.
+    for count in [1, 160, 161, 320] {
+        #expect(throws: GlossMelFrontend.MelError.self) {
+            _ = try preparer.prepare([Float](repeating: 0.1, count: count), prompt: .document)
+        }
+    }
+    // 321 samples is already 3 frames = one token at this level; the daemon's 480-sample minimum
+    // (`OmniSmallInputLimits.minimumAudioSamples`) is the policy applied before preparation.
+    for count in [321, 480, 481] {
+        let prepared = try preparer.prepare(OmniSmallVerificationInputs.audio(sampleCount: count), prompt: .document)
+        #expect(prepared.tokenCount == 1, "\(count) samples")
+        #expect(prepared.tokenIDs.count == TokenShape.audioPrefix + 1 + TokenShape.audioSuffix)
+    }
+}
+
+/// The source model counts ceil(samples / 160) mel frames (a partial last frame counts) and
+/// computes that frame over zero padding. 40037 samples: 251 frames / 63 tokens, not 250 / 62.
+@Test func audioFrameCountIsCeilOfSamplesOverHopWithTheLastFrameZeroPadded() throws {
+    let mel = try GlossMelFrontend()
+    let preparer = AudioInputPreparer(mel: mel, tokens: .jinaV5OmniSmallAudio)
+    let table: [(samples: Int, frames: Int, tokens: Int)] = [
+        (40_037, 251, 63), (40_000, 250, 62), (40_160, 251, 63), (40_161, 252, 63),
+        (480, 3, 1), (481, 4, 1), (8_000, 50, 12), (8_001, 51, 13),
+        (480_000, 3_000, 750),
+    ]
+    for (samples, frames, tokens) in table {
+        let prepared = try preparer.prepare(OmniSmallVerificationInputs.audio(sampleCount: samples), prompt: .query)
+        #expect(prepared.tokenCount == tokens, "\(samples) samples: tokens")
+        #expect(prepared.tokenCount == AudioMasks.pooledTokenCount(frames: frames), "\(samples) samples: frames \(frames)")
+        #expect(prepared.masks.bucketFrames >= frames)
+    }
+
+    // The mel for the partial last frame is computed over ZERO padding (packedMel zero-pads past
+    // the clip): explicitly zero-extending the clip to a whole number of frames changes nothing.
+    let clip = OmniSmallVerificationInputs.audio(sampleCount: 40_037)
+    let extended = clip + [Float](repeating: 0, count: 251 * 160 - clip.count)
+    #expect(try mel.packedMel(clip, frames: 400) == mel.packedMel(extended, frames: 400))
+    // ...and the prepared mel zeroes only what lies beyond the 251 real frames.
+    let prepared = try preparer.prepare(clip, prompt: .document)
+    let bucket = prepared.masks.bucketFrames
+    let lastReal = (0..<mel.nMels).map { prepared.packedMel[$0 * bucket + 250] }
+    #expect(lastReal.contains { $0 != 0 }, "the partial last frame must carry real mel values")
+    #expect((0..<mel.nMels).allSatisfy { prepared.packedMel[$0 * bucket + 251] == 0 })
+}
+
+/// Python `round()` (half to even) on `x / 32`, in integers: no shared code with the
+/// implementation under test.
+private func pythonRoundToFactor(_ x: Int, factor: Int = 32) -> Int {
+    let (quotient, remainder) = x.quotientAndRemainder(dividingBy: factor)
+    let rounded: Int
+    if remainder * 2 > factor { rounded = quotient + 1 }
+    else if remainder * 2 < factor { rounded = quotient }
+    else { rounded = quotient.isMultiple(of: 2) ? quotient : quotient + 1 }   // tie: to even
+    return max(factor, rounded * factor)
+}
+
+@Test func imageSmartResizeRoundsTiesToEvenLikePython() {
+    // Bounds wide enough that only the initial rounding decides the size.
+    let preprocessor = GlossImagePreprocessor(minPixels: 1, maxPixels: 100_000_000)
+    // The reported case and its relatives: sides of k*32 + 16.
+    let ties: [(size: Int, expected: Int)] = [
+        (48, 64), (80, 64), (112, 128), (144, 128), (176, 192), (208, 192), (240, 256),
+        (400, 384), (464, 448), (528, 512), (720, 704), (784, 768), (1_040, 1_024), (16, 32),
+        (1_360, 1_344), (1_296, 1_280),
+    ]
+    for (size, expected) in ties {
+        let (h, w) = preprocessor.smartResize(h: size, w: size)
+        #expect(h == expected && w == expected, "\(size): got \(h)x\(w), Python round() gives \(expected)")
+    }
+    // The reported 1280x720 image: 704 rows (grid 44 x 80), not 736 (46 x 80).
+    let hd = GlossImagePreprocessor(minPixels: 262_144, maxPixels: 1_310_720)
+    let (rows, columns) = hd.smartResize(h: 720, w: 1_280, maxPixelsOverride: 5_120 * 256)
+    #expect(rows == 704 && columns == 1_280)
+    #expect((rows / 16, columns / 16) == (44, 80))
+    // Every side length, both axes: identical to the integer half-to-even reference.
+    for size in 1...4_096 {
+        let (h, w) = preprocessor.smartResize(h: size, w: 640)
+        #expect(h == pythonRoundToFactor(size) && w == 640, "side \(size)")
+    }
+}
+
+private enum TokenShape {
+    static let audioPrefix = MediaTokens.jinaV5OmniSmallAudio.resolvedPrefix(for: .document).count
+    static let audioSuffix = MediaTokens.jinaV5OmniSmallAudio.suffix.count
 }
 
 @Test(.enabled(if: hasAll("artifacts/coreml/text_multifunc.mlpackage", "artifacts/hf/jina-v5-omni-small"), "Requires converter text artifacts"))

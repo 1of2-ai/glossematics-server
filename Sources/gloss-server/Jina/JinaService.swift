@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Tokenizers
 
@@ -382,17 +383,27 @@ actor JinaTextBatcher {
         return selections
     }
 
+    /// What one wave produced, row by row, in `active` order (rows whose jobs vanished while
+    /// the wave ran are omitted).
+    private struct WaveExecution {
+        var outcomes: [(selection: Selection, result: Result<[Float], any Error>)]
+        /// The batch failed and every row was re-run alone.
+        var isolated: Bool
+    }
+
     private func flushOneWave() async {
         guard !executing, !order.isEmpty else { return }
         flushTask?.cancel()
         flushTask = nil
         executing = true
         var selected: [Selection] = []
+        var holdingLane = false
 
         do {
             // Waiting for media or warmup is free batching time. Freeze the bucket only once the
             // accelerator permit is ours, so arrivals during the wait can join.
             try await lane.acquire()
+            holdingLane = true
             let now = DispatchTime.now().uptimeNanoseconds
             guard let capacity = readyCapacity(now: now) else {
                 await lane.release()
@@ -426,45 +437,111 @@ actor JinaTextBatcher {
                 scheduleIfNeeded()
                 return
             }
-            let logicalRequestCount = Set(active.map(\.jobID)).count
             let executionDimensions = OmniSmall.Dimensions(
                 rawValue: active.map { $0.dimensions.rawValue }.max() ?? 1024) ?? .d1024
             let model = await store.get()
-            let raw: [[Float]]
-            do {
-                raw = try await model.embedConditionedTokenRows(active.map(\.tokenIDs), dimensions: executionDimensions)
-            } catch {
-                await lane.release()
-                throw error
-            }
+            let execution = try await executeWave(active, dimensions: executionDimensions, model: model)
             await lane.release()
-            guard raw.count == active.count else {
-                throw OmniSmallError.inferenceFailed("batched execution returned \(raw.count) rows for \(active.count) inputs")
+            holdingLane = false
+
+            // Bookkeeping happens off the accelerator. Every lookup re-checks `jobs`: a client may
+            // have cancelled (or an earlier row failed its job) while the lane was busy.
+            let failedRows = execution.outcomes.filter { if case .failure = $0.result { true } else { false } }.count
+            if execution.isolated {
+                await metrics.recordIsolation(failedRows: failedRows)
+            } else if failedRows == 0 {
+                // A dense wave counts once under its native capacity; otherwise the backend ran
+                // each row on the single-row functions.
+                let tokens = active.reduce(0) { $0 + $1.tokenIDs.count }
+                let kind = active.count >= threshold && capacity > 1 ? "native_b\(capacity)" : "single"
+                await metrics.recordWave(kind: kind, rows: active.count, tokens: tokens,
+                                         requests: Set(active.map(\.jobID)).count)
             }
-            // A dense wave counts once under its native capacity; otherwise the backend ran each
-            // row on the single-row functions.
-            let tokens = active.reduce(0) { $0 + $1.tokenIDs.count }
-            if active.count >= threshold, capacity > 1 {
-                await metrics.recordWave(kind: "native_b\(capacity)", rows: active.count, tokens: tokens,
-                                         requests: logicalRequestCount)
-            } else {
-                await metrics.recordWave(kind: "single", rows: active.count, tokens: tokens,
-                                         requests: logicalRequestCount)
-            }
-            for (offset, selection) in active.enumerated() {
-                guard var job = jobs[selection.jobID] else { continue }
-                job.outputs[selection.rowIndex] = try jinaProjectMatryoshka(raw[offset], to: selection.dimensions)
-                jobs[selection.jobID] = job
+            for outcome in execution.outcomes {
+                switch outcome.result {
+                case let .success(values):
+                    if execution.isolated {
+                        await metrics.recordWave(kind: "single", rows: 1, tokens: outcome.selection.tokenIDs.count,
+                                                 requests: 1)
+                    }
+                    storeOutput(values, for: outcome.selection)
+                case let .failure(error):
+                    failJobs([outcome.selection.jobID],
+                             error: Self.rowError(error, rowIndex: outcome.selection.rowIndex))
+                }
             }
             completeReadyJobs()
-        } catch is CancellationError {
-            failJobs(Set(selected.map(\.jobID)), error: CancellationError())
         } catch {
+            // Only cancellation of the scheduling task itself lands here (row and wave failures
+            // are outcomes, not throws).
+            if holdingLane { await lane.release() }
             failJobs(Set(selected.map(\.jobID)), error: error)
         }
         executing = false
         cleanFinishedOrMissingJobs()
         scheduleIfNeeded()
+    }
+
+    /// Run one wave with the lane held. A failed multi-row batch does not fail its rows: they come
+    /// from unrelated clients, so each is re-run alone on the single-row functions and only the
+    /// jobs whose own rows fail are failed. Throws only `CancellationError`.
+    private func executeWave(
+        _ active: [Selection], dimensions: OmniSmall.Dimensions, model: OmniSmall
+    ) async throws -> WaveExecution {
+        do {
+            let raw = try await model.embedConditionedTokenRows(active.map(\.tokenIDs), dimensions: dimensions)
+            guard raw.count == active.count else {
+                throw OmniSmallError.inferenceFailed("batched execution returned \(raw.count) rows for \(active.count) inputs")
+            }
+            return WaveExecution(outcomes: zip(active, raw).map { ($0, .success($1)) }, isolated: false)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            guard active.count > 1 else {
+                return WaveExecution(outcomes: [(active[0], .failure(error))], isolated: false)
+            }
+            timestamped("text wave of \(active.count) rows failed (\(error)); re-running each row on the single-row functions", error: true)
+            var outcomes: [(selection: Selection, result: Result<[Float], any Error>)] = []
+            var failedJobs = Set<UUID>()
+            for selection in active {
+                // Skip rows nobody is waiting for: a cancelled job, or one an earlier row failed.
+                guard jobs[selection.jobID] != nil, !failedJobs.contains(selection.jobID) else { continue }
+                do {
+                    let rows = try await model.embedConditionedTokenRows([selection.tokenIDs], dimensions: selection.dimensions)
+                    guard rows.count == 1 else {
+                        throw OmniSmallError.inferenceFailed("single-row execution returned \(rows.count) rows for 1 input")
+                    }
+                    outcomes.append((selection, .success(rows[0])))
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    failedJobs.insert(selection.jobID)
+                    outcomes.append((selection, .failure(error)))
+                }
+            }
+            return WaveExecution(outcomes: outcomes, isolated: true)
+        }
+    }
+
+    /// Record a finished row on its job, truncating to the job's own size. A row that cannot be
+    /// projected fails only its job.
+    private func storeOutput(_ values: [Float], for selection: Selection) {
+        guard var job = jobs[selection.jobID] else { return }
+        do {
+            job.outputs[selection.rowIndex] = try jinaProjectMatryoshka(values, to: selection.dimensions)
+            jobs[selection.jobID] = job
+        } catch {
+            failJobs([selection.jobID], error: error)
+        }
+    }
+
+    /// A row that ran alone is index 0 to the model; the job knows it by its position in its own
+    /// request, which is what callers map back to an input index.
+    private static func rowError(_ error: any Error, rowIndex: Int) -> any Error {
+        if case let OmniSmallError.invalidBatchInput(_, reason) = error {
+            return OmniSmallError.invalidBatchInput(index: rowIndex, reason: reason)
+        }
+        return error
     }
 
     private func completeReadyJobs() {
@@ -503,6 +580,174 @@ enum JinaMediaRequestPlanner {
     }
 }
 
+// MARK: - startup verification and hardware identity
+
+/// How much the process proves before `/ready` turns green.
+enum JinaStartupVerification: String, Sendable, CaseIterable {
+    /// Load and run every Core ML function once, cross-checked for self-consistency.
+    case full
+    /// One text embedding: bundle validation plus a single warm inference.
+    case basic
+}
+
+/// The compact verification result reported by `/health`. The per-function list stays in the
+/// startup log: 41 entries are not a health payload.
+struct JinaVerificationSummary: Encodable, Sendable, Equatable {
+    var mode: String
+    var functions: Int?
+    var passed: Int?
+    var failed: Int?
+    /// `model.function: reason` for the first failing function.
+    var first_failure: String?
+    var min_consistency_cosine: Double?
+    var wall_ms: Double?
+    var footprint_delta_bytes: Int64?
+
+    init(mode: JinaStartupVerification) { self.mode = mode.rawValue }
+
+    init(report: OmniSmallVerificationReport, firstFailure: String? = nil) {
+        mode = JinaStartupVerification.full.rawValue
+        functions = report.functions.count
+        passed = report.passedCount
+        failed = report.failedCount
+        first_failure = firstFailure
+        min_consistency_cosine = report.minimumCosine
+        wall_ms = report.wallMilliseconds
+        footprint_delta_bytes = report.footprintDeltaBytes
+    }
+}
+
+/// Where startup verification leaves its result for `/health`. It starts as just the mode and
+/// is replaced once the run finishes, whether it passed or not.
+actor JinaStartupStatus {
+    private(set) var summary: JinaVerificationSummary
+
+    init(mode: JinaStartupVerification) { summary = JinaVerificationSummary(mode: mode) }
+
+    func record(_ summary: JinaVerificationSummary) { self.summary = summary }
+}
+
+/// Formats startup verification for the log. `Sendable` and lock-guarded because the runtime
+/// reports each function from whichever thread ran it.
+final class JinaVerificationLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    /// One line per function, in the server's `timestamped` style; failures go to stderr.
+    func report(_ check: OmniSmallFunctionCheck) {
+        let index = lock.withLock { count += 1; return count }
+        timestamped(Self.line(check, index: index), error: !check.passed)
+    }
+
+    static func line(_ check: OmniSmallFunctionCheck, index: Int) -> String {
+        guard check.passed else {
+            return "verify #\(index) \(check.name) FAILED: \(check.failure ?? "unknown failure")"
+        }
+        var line = "verify #\(index) \(check.name) ok load=\(fixed(check.loadMilliseconds))ms run=\(fixed(check.runMilliseconds))ms"
+        if let cosine = check.minimumCosine, let reference = check.referenceFunction {
+            line += " cosine=\(String(format: "%.6f", cosine)) vs \(reference)"
+        }
+        return line
+    }
+
+    /// The readiness line for a passing run.
+    static func readyLine(_ report: OmniSmallVerificationReport, modalities: [String]) -> String {
+        let cosine = report.minimumCosine.map { String(format: "%.6f", $0) } ?? "n/a"
+        let mebibytes = Double(report.footprintDeltaBytes) / 1_048_576
+        return "ready: verified \(report.functions.count) functions in \(fixed(report.wallMilliseconds / 1000))s "
+            + "(min consistency cosine \(cosine), footprint \(String(format: "%+.0f", mebibytes)) MiB); "
+            + "modalities=\(modalities.joined(separator: ","))"
+    }
+
+    private static func fixed(_ value: Double) -> String { String(format: "%.1f", value) }
+}
+
+/// What runs between "the bundle validated" and "ready".
+enum JinaStartup {
+    /// One text embedding through the served path, with the accelerator lane held. Startup's
+    /// `basic` mode is this alone, and the keep-warm loop repeats it.
+    static func warm(model: OmniSmall, lane: AcceleratorLane, metrics: ServerMetrics) async throws {
+        try await lane.acquire()
+        do {
+            _ = try await model.embedDocument(.text("warm"), dimensions: .d1024)
+            await lane.release()
+            await metrics.recordInference()
+        } catch {
+            await lane.release()
+            throw error
+        }
+    }
+
+    /// Every Core ML function once, with the lane held, each logged as it finishes.
+    static func verifyAll(model: OmniSmall, lane: AcceleratorLane, metrics: ServerMetrics) async throws -> OmniSmallVerificationReport {
+        try await lane.acquire()
+        let log = JinaVerificationLog()
+        do {
+            let report = try await model.verifyAllFunctions(progress: { log.report($0) })
+            await lane.release()
+            await metrics.recordInference()
+            return report
+        } catch {
+            await lane.release()
+            throw error
+        }
+    }
+
+    /// Runs the selected startup work and returns the readiness log line. Any throw keeps the server
+    /// not ready, as a failed BidirLM placement audit does: a failed verification records its
+    /// summary for `/health` (with the first failing function) and rethrows
+    /// `OmniSmallVerificationError`, whose description names that function and why.
+    static func run(
+        mode: JinaStartupVerification, model: OmniSmall, lane: AcceleratorLane, metrics: ServerMetrics,
+        status: JinaStartupStatus, modalities: [String]
+    ) async throws -> String {
+        let started = ContinuousClock.now
+        switch mode {
+        case .basic:
+            try await warm(model: model, lane: lane, metrics: metrics)
+            let seconds = elapsedMilliseconds(ContinuousClock.now - started) / 1000
+            return "ready: validated bundle, text inference warmed in \(String(format: "%.1f", seconds))s (startup verification basic); modalities=\(modalities.joined(separator: ","))"
+        case .full:
+            timestamped("startup verification: loading and running every Core ML function (readiness waits for it)")
+            let report: OmniSmallVerificationReport
+            do {
+                report = try await verifyAll(model: model, lane: lane, metrics: metrics)
+            } catch let failure as OmniSmallVerificationError {
+                await status.record(JinaVerificationSummary(
+                    report: failure.report, firstFailure: "\(failure.function): \(failure.reason)"))
+                throw failure
+            }
+            await status.record(JinaVerificationSummary(report: report))
+            // The public path end to end, as `basic` does: verification runs the native functions
+            // directly, this runs the served text call.
+            try await warm(model: model, lane: lane, metrics: metrics)
+            return JinaVerificationLog.readyLine(report, modalities: modalities)
+        }
+    }
+}
+
+/// The machine the numbers were calibrated for: batch thresholds (`NativeTextBatchPolicy`) and a W8
+/// numeric fix were measured on an Apple M4 Max. Reported so a deployment on other silicon shows it.
+enum HardwareIdentity {
+    /// `machdep.cpu.brand_string`, e.g. `Apple M4 Max`.
+    static let chip: String = sysctlString("machdep.cpu.brand_string") ?? sysctlString("hw.model") ?? "unknown"
+    /// Marketing version and build, e.g. `15.4.1 (24E263)`.
+    static let macOS: String = {
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        let base = "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+        return sysctlString("kern.osversion").map { "\(base) (\($0))" } ?? base
+    }()
+
+    private static func sysctlString(_ name: String) -> String? {
+        var size = 0
+        guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 1 else { return nil }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctlbyname(name, &buffer, &size, nil, 0) == 0 else { return nil }
+        let text = String(decoding: buffer.prefix { $0 != 0 }, as: UTF8.self)
+        return text.isEmpty ? nil : text
+    }
+}
+
 // MARK: - HTTP service
 
 struct JinaHealthResponse: Encodable, Sendable {
@@ -523,6 +768,11 @@ struct JinaHealthResponse: Encodable, Sendable {
     var max_tokens: Int
     var modalities: [String]
     var video_recipe: String?
+    /// What startup proved before readiness (see `--startup-verification`).
+    var startup_verification: JinaVerificationSummary
+    /// The chip and macOS the process runs on; batch thresholds were calibrated on an Apple M4 Max.
+    var chip: String
+    var macos: String
     var port: Int
     var uptime_seconds: Int
     var ready_at: Int?
@@ -549,6 +799,7 @@ struct JinaEmbeddingsService: Sendable {
     let batcher: JinaTextBatcher
     let lane: AcceleratorLane
     let metrics: ServerMetrics
+    let startup: JinaStartupStatus
     let docsContext: DocsPage.Context
     let startedAt: Int
     let isFixture: Bool
@@ -594,6 +845,7 @@ struct JinaEmbeddingsService: Sendable {
         let runtime = await state.snapshot()
         let queue = await admission.snapshot()
         let batching = await batcher.snapshot()
+        let verification = await startup.summary
         var spaces = [String: String]()
         for d in matryoshka {
             if let dims = OmniSmall.Dimensions(rawValue: d) { spaces[String(d)] = store.space(for: dims) }
@@ -615,6 +867,9 @@ struct JinaEmbeddingsService: Sendable {
             max_tokens: JinaLimits.maximumTokensPerInput,
             modalities: Self.modalities(bundle),
             video_recipe: bundle.capabilities.supportsVideo ? OmniSmall.videoRecipe : nil,
+            startup_verification: verification,
+            chip: HardwareIdentity.chip,
+            macos: HardwareIdentity.macOS,
             port: Int(config.port),
             uptime_seconds: max(0, Int(Date().timeIntervalSince(runtime.startedAt))),
             ready_at: runtime.readyAt.map { Int($0.timeIntervalSince1970) },
@@ -664,6 +919,8 @@ struct JinaEmbeddingsService: Sendable {
         labeled("Text rows executed by native batch kind.", "gloss_text_rows_total", "kind", counters.rowsByKind, kinds)
         labeled("Conditioned text tokens executed by native batch kind.", "gloss_text_tokens_total", "kind", counters.tokensByKind, kinds)
         counter("Text waves that combined several requests.", "gloss_coalesced_waves_total", counters.coalescedWaves)
+        counter("Failed multi-row text waves re-run one row at a time.", "gloss_text_isolation_retries_total", counters.isolationRetries)
+        counter("Rows that still failed when re-run alone.", "gloss_text_isolation_failed_rows_total", counters.isolationFailedRows)
         labeled("Media items embedded.", "gloss_media_items_total", "kind", counters.mediaItems, ["image", "audio", "video"])
         gauge("Configured admission request limit.", "gloss_admission_max_requests", String(queue.maxRequests))
         gauge("Configured admission item limit.", "gloss_admission_max_items", String(queue.maxItems))
@@ -748,6 +1005,7 @@ struct JinaEmbeddingsService: Sendable {
         var tokenCounts: [Int] = []
         var promptTokens = 0
         var hasMedia = false
+        var hasVideo = false
         var hasTokenIDs = false
         let capabilities = bundle.capabilities
 
@@ -798,6 +1056,7 @@ struct JinaEmbeddingsService: Sendable {
                 case let .video(data):
                     guard capabilities.supportsVideo else { throw unsupported("video", index) }
                     hasMedia = true
+                    hasVideo = true
                     inputs.append(.videoData(data))
                 case .message:
                     throw APIError.invalidRequest(
@@ -855,22 +1114,11 @@ struct JinaEmbeddingsService: Sendable {
                         }
                         textOffset += count
                     } else {
-                        try await lane.acquire()
-                        do {
-                            let chunk = Array(inputs[start..<end])
-                            let vectors: [[Float]] = role == .query
-                                ? try await model.embedQueries(chunk, dimensions: dimensions).map(\.values)
-                                : try await model.embedDocuments(chunk, dimensions: dimensions).map(\.values)
-                            await lane.release()
-                            ordered.append(contentsOf: vectors)
-                            for input in chunk { await metrics.recordMedia(kind: Self.mediaKind(input)) }
-                        } catch OmniSmallError.invalidBatchInput(let localIndex, let reason) {
-                            await lane.release()
-                            throw OmniSmallError.invalidBatchInput(index: start + localIndex, reason: reason)
-                        } catch {
-                            await lane.release()
-                            throw error
-                        }
+                        // CPU preparation first, with no accelerator permit; Core ML second, with it.
+                        let input = inputs[start]
+                        ordered.append(try await Self.embedMediaItem(
+                            input, at: start, role: role, dimensions: dimensions, model: model, lane: lane))
+                        await metrics.recordMedia(kind: Self.mediaKind(input))
                     }
                     start = end
                 }
@@ -885,16 +1133,20 @@ struct JinaEmbeddingsService: Sendable {
                 EmbeddingObject(index: $0.offset,
                                 embedding: base64 ? .base64(EmbeddingsService.base64LittleEndian($0.element)) : .floats($0.element))
             }
+            var headers = [
+                ("X-Glossematics-Space", space),
+                ("X-Glossematics-Dimensions", String(dimensions.rawValue)),
+                ("X-Glossematics-Role", role == .query ? "query" : "document"),
+                ("X-Glossematics-Usage-Scope", hasMedia ? "text-only" : "all-inputs"),
+            ]
+            // Video vectors from different decode/sampling recipes share a space ID by design, so a
+            // client indexing video needs the recipe that produced them.
+            if hasVideo { headers.append(("X-Glossematics-Video-Recipe", OmniSmall.videoRecipe)) }
             return .json(
                 200,
                 EmbeddingsResponse(data: data, model: servedModelName,
                                    usage: .init(prompt_tokens: promptTokens, total_tokens: promptTokens)),
-                extraHeaders: [
-                    ("X-Glossematics-Space", space),
-                    ("X-Glossematics-Dimensions", String(dimensions.rawValue)),
-                    ("X-Glossematics-Role", role == .query ? "query" : "document"),
-                    ("X-Glossematics-Usage-Scope", hasMedia ? "text-only" : "all-inputs"),
-                ])
+                extraHeaders: headers)
         } catch let error as OmniSmallError {
             await metrics.recordFailure()
             switch error {
@@ -909,6 +1161,37 @@ struct JinaEmbeddingsService: Sendable {
         } catch {
             await metrics.recordFailure()
             return .error(500, .apiError(String(describing: error)))
+        }
+    }
+
+    /// Embed one image, audio clip, or video. The CPU half (`prepareMedia`: decode, resize, mel, prompt
+    /// ids) runs with NO accelerator permit, so a multi-second video decode blocks nothing; only the
+    /// Core ML half holds the lane, and the lane is released on every path, cancellation included.
+    /// `index` is the input's position in the request: a bad input is reported against it.
+    static func embedMediaItem(
+        _ input: OmniSmall.Input,
+        at index: Int,
+        role: RetrievalRole,
+        dimensions: OmniSmall.Dimensions,
+        model: OmniSmall,
+        lane: AcceleratorLane
+    ) async throws -> [Float] {
+        let prepared: OmniSmallPreparedMedia
+        do {
+            prepared = try await model.prepareMedia(input, role: role == .query ? .query : .document)
+        } catch OmniSmallError.invalidInput(let reason) {
+            throw OmniSmallError.invalidBatchInput(index: index, reason: reason)
+        } catch OmniSmallError.invalidBatchInput(let localIndex, let reason) {
+            throw OmniSmallError.invalidBatchInput(index: index + localIndex, reason: reason)
+        }
+        try await lane.acquire()
+        do {
+            let vector = try await model.embedPreparedMedia(prepared, dimensions: dimensions)
+            await lane.release()
+            return vector
+        } catch {
+            await lane.release()
+            throw error
         }
     }
 

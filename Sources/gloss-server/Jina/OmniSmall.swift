@@ -183,7 +183,7 @@ public actor OmniSmall {
     ) async throws -> [Float] {
         do {
             try Task.checkCancellation()
-            try validate(input)
+            try Self.validate(input)
             let values: [Float]
             switch input {
             case let .text(text):
@@ -199,8 +199,9 @@ public actor OmniSmall {
                 }
                 values = rows[0]
             case .image, .imageData, .audio, .audioData, .video, .videoData:
-                values = try await backend.embedMedia(
-                    input, role: role, dimensions: targetDimensions)
+                // CPU phase off the accelerator and the backend actor, then the predictions.
+                let prepared = try await backend.prepareMedia(input, role: role)
+                values = try await backend.embedPreparedMedia(prepared, dimensions: targetDimensions)
             }
             try Task.checkCancellation()
             return try OmniSmallVectorValidator.validated(
@@ -208,19 +209,141 @@ public actor OmniSmall {
                 dimensions: targetDimensions,
                 space: targetSpace,
                 artifactFingerprint: artifactFingerprint)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch let error as OmniSmallError {
-            throw error
-        } catch let error as OmniSmallBackendError {
+        } catch {
+            throw Self.singleInputError(error)
+        }
+    }
+
+    /// The error a single-input call reports: input problems are `invalidInput` (HTTP 400), backend
+    /// failures are `inferenceFailed` (HTTP 500), and cancellation stays cancellation.
+    private static func singleInputError(_ error: any Error) -> any Error {
+        switch error {
+        case is CancellationError:
+            return CancellationError()
+        case let error as OmniSmallError:
+            return error
+        case let error as OmniSmallBackendError:
             switch error {
             case let .item(_, reason), let .invalidInput(reason):
-                throw OmniSmallError.invalidInput(reason)
+                return OmniSmallError.invalidInput(reason)
             case let .failure(reason):
-                throw OmniSmallError.inferenceFailed(reason)
+                return OmniSmallError.inferenceFailed(reason)
             }
+        default:
+            return OmniSmallError.inferenceFailed(String(describing: error))
+        }
+    }
+
+    // MARK: Server SPI — split media execution
+
+    /// The CPU half of embedding one image, audio clip, or video: decode, resize, patchify, mel,
+    /// position tables, and the retrieval-conditioned prompt ids. It runs on a bounded CPU executor
+    /// (about half the cores) — never on this actor, the backend actor, the Swift cooperative
+    /// pool, or the accelerator — so the caller should do it BEFORE taking the accelerator lane:
+    /// a multi-second video decode then blocks nothing.
+    ///
+    /// Returns a `Sendable` value to hand to ``embedPreparedMedia(_:dimensions:)``. Temporary files
+    /// for `audioData`/`videoData` are created and removed inside this call.
+    ///
+    /// Throws `OmniSmallError.invalidInput` for anything wrong with the input itself (undecodable
+    /// image, audio shorter than 480 samples, an oversized or unreadable video, a text input)
+    /// — HTTP 400 — and `OmniSmallError.inferenceFailed` for server-side problems. Cancelling the
+    /// calling task abandons a queued job immediately and stops a running one at its next
+    /// checkpoint, throwing `CancellationError`.
+    @_spi(Server)
+    public nonisolated func prepareMedia(
+        _ input: Input,
+        role: OmniSmallRole
+    ) async throws -> OmniSmallPreparedMedia {
+        do {
+            try Task.checkCancellation()
+            switch input {
+            case .text:
+                throw OmniSmallError.invalidInput(
+                    "prepareMedia takes image, audio, or video inputs; embed text with embedConditionedTokenRows")
+            case .image, .imageData, .audio, .audioData, .video, .videoData:
+                try Self.validate(input)
+            }
+            let prepared = try await backend.prepareMedia(input, role: role)
+            try Task.checkCancellation()
+            return prepared
         } catch {
-            throw OmniSmallError.inferenceFailed(String(describing: error))
+            throw Self.singleInputError(error)
+        }
+    }
+
+    /// The accelerator half: Core ML predictions only — encoder, embed, scatter, decoder — for a
+    /// value from ``prepareMedia(_:role:)``. Returns the vector validated exactly like every other
+    /// served embedding (width, finiteness, unit norm), Matryoshka-truncated to `dimensions`.
+    /// Hold the accelerator lane around this call, not around preparation.
+    ///
+    /// Throws `OmniSmallError.inferenceFailed` if a prediction fails or the output is invalid, and
+    /// `CancellationError` if cancelled.
+    @_spi(Server)
+    public func embedPreparedMedia(
+        _ prepared: OmniSmallPreparedMedia,
+        dimensions targetDimensions: Dimensions
+    ) async throws -> [Float] {
+        let targetSpace = space(for: targetDimensions)
+        do {
+            try Task.checkCancellation()
+            let values = try await backend.embedPreparedMedia(prepared, dimensions: targetDimensions)
+            try Task.checkCancellation()
+            return try OmniSmallVectorValidator.validated(
+                values,
+                dimensions: targetDimensions,
+                space: targetSpace,
+                artifactFingerprint: artifactFingerprint)
+        } catch {
+            throw Self.singleInputError(error)
+        }
+    }
+
+    // MARK: Server SPI — startup verification
+
+    /// Load and run EVERY Core ML function the validated bundle declares, so nothing first loads on
+    /// a user request and no chip-specific fault surfaces there: all 11 text buckets and 5 batch
+    /// rungs, every image (6), video (4), and audio (5) encoder bucket, and every embed and decoder
+    /// bucket (5 each) — 41 functions in the production bundle.
+    ///
+    /// Each output must be finite and correctly shaped, and every embedding unit-norm (the served
+    /// validator). Beyond that, functions that must agree are cross-checked with chip-independent
+    /// self-consistency: one conditioned text through every text bucket; each batch rung's rows
+    /// against the single-row function; one procedural image, video, and audio clip through every
+    /// encoder bucket, comparing the real (unpadded) features; and one media sequence through every
+    /// embed and decoder bucket. No goldens ship.
+    ///
+    /// The run always completes and the loaded functions stay resident, so serving starts warm.
+    /// Call it with the accelerator lane held. It is slow on a cold machine (loading every function),
+    /// so pass `progress` to log each function as it finishes.
+    ///
+    /// - Returns: A report with one entry per function plus totals: wall time, summed load and run
+    ///   time, and process memory before and after.
+    /// - Throws: ``OmniSmallVerificationError`` — naming the first failing function and the
+    ///   reason, and carrying the complete report — when any function failed; `CancellationError`
+    ///   if cancelled.
+    @_spi(Server)
+    public func verifyAllFunctions(
+        progress: (@Sendable (OmniSmallFunctionCheck) -> Void)? = nil
+    ) async throws -> OmniSmallVerificationReport {
+        let nativeSpace = space(for: .d1024)
+        let fingerprint = artifactFingerprint
+        let validate: @Sendable ([Float]) throws -> Void = { values in
+            _ = try OmniSmallVectorValidator.validated(
+                values, dimensions: .d1024, space: nativeSpace, artifactFingerprint: fingerprint)
+        }
+        do {
+            try Task.checkCancellation()
+            return try await backend.verifyAllFunctions(validateEmbedding: validate, progress: progress)
+        } catch let error as OmniSmallVerificationError {
+            throw error
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw OmniSmallVerificationError(
+                function: "setup",
+                reason: .setupFailed(String(describing: error)),
+                report: OmniSmallVerificationReport(functions: [], wallMilliseconds: 0))
         }
     }
 
@@ -246,7 +369,7 @@ public actor OmniSmall {
         for (index, input) in inputs.enumerated() {
             try Task.checkCancellation()
             do {
-                try validate(input)
+                try Self.validate(input)
                 switch input {
                 case let .text(text):
                     textSlots.append(index)
@@ -427,8 +550,8 @@ public actor OmniSmall {
         space targetSpace: String
     ) async throws -> [Float] {
         do {
-            let row = try await backend.embedMedia(
-                input, role: role, dimensions: targetDimensions)
+            let prepared = try await backend.prepareMedia(input, role: role)
+            let row = try await backend.embedPreparedMedia(prepared, dimensions: targetDimensions)
             try Task.checkCancellation()
             return try OmniSmallVectorValidator.validated(
                 row,
@@ -531,7 +654,7 @@ public actor OmniSmall {
         return output
     }
 
-    private func validate(_ input: Input) throws {
+    private static func validate(_ input: Input) throws {
         switch input {
         case let .text(text):
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -558,14 +681,14 @@ public actor OmniSmall {
         }
     }
 
-    private func validateMediaData(_ data: Data, kind: String, maximumBytes: Int) throws {
+    private static func validateMediaData(_ data: Data, kind: String, maximumBytes: Int) throws {
         guard !data.isEmpty, data.count <= maximumBytes else {
             throw OmniSmallError.invalidInput(
                 "\(kind) data must be nonempty and no larger than \(maximumBytes / 1_048_576) MiB")
         }
     }
 
-    private func validateFile(_ url: URL, kind: String) throws {
+    private static func validateFile(_ url: URL, kind: String) throws {
         guard url.isFileURL else {
             throw OmniSmallError.invalidInput("\(kind) URL must be a local file URL")
         }
@@ -723,18 +846,6 @@ public enum OmniSmallError: Error, Equatable, Sendable, CustomStringConvertible 
     }
 }
 
-enum OmniSmallRole: Sendable {
-    case query
-    case document
-
-    var prompt: GlossTextEmbedder.Prompt {
-        switch self {
-        case .query: .query
-        case .document: .document
-        }
-    }
-}
-
 protocol OmniSmallBackend: Sendable {
     /// Tokenize every text with its retrieval conditioning and enforce the production token limit.
     /// Preparation is a separate phase so a batch can fail on any input before inference begins:
@@ -754,6 +865,68 @@ protocol OmniSmallBackend: Sendable {
         role: OmniSmallRole,
         dimensions: OmniSmall.Dimensions
     ) async throws -> [Float]
+
+    /// The CPU phase of a media input: decode, resize, patchify, mel, position tables, prompt ids.
+    /// It must run off the accelerator, and must not depend on the backend's own isolation, so a
+    /// long video never stalls inference. Input problems throw `OmniSmallBackendError.invalidInput`.
+    func prepareMedia(
+        _ input: OmniSmall.Input,
+        role: OmniSmallRole
+    ) async throws -> OmniSmallPreparedMedia
+
+    /// The accelerator phase: Core ML predictions only. Returns the native (1024-wide) vector,
+    /// Matryoshka-truncated to `dimensions`.
+    func embedPreparedMedia(
+        _ prepared: OmniSmallPreparedMedia,
+        dimensions: OmniSmall.Dimensions
+    ) async throws -> [Float]
+
+    /// Load and run every declared Core ML function and cross-check the results.
+    func verifyAllFunctions(
+        validateEmbedding: @escaping @Sendable ([Float]) throws -> Void,
+        progress: (@Sendable (OmniSmallFunctionCheck) -> Void)?
+    ) async throws -> OmniSmallVerificationReport
+}
+
+/// Backends without a separate CPU phase (test doubles) keep working: preparation just carries the
+/// input forward and `embedMedia` does everything in one step, exactly as before the split.
+extension OmniSmallBackend {
+    func prepareMedia(
+        _ input: OmniSmall.Input,
+        role: OmniSmallRole
+    ) async throws -> OmniSmallPreparedMedia {
+        let kind: OmniSmallPreparedMedia.Kind
+        switch input {
+        case .text:
+            throw OmniSmallBackendError.failure("text input reached the media backend")
+        case .image, .imageData: kind = .image
+        case .audio, .audioData: kind = .audio
+        case .video, .videoData: kind = .video
+        }
+        return OmniSmallPreparedMedia(
+            kind: kind, role: role, prepareMilliseconds: 0, queuedMilliseconds: 0,
+            payload: .passthrough(input))
+    }
+
+    func embedPreparedMedia(
+        _ prepared: OmniSmallPreparedMedia,
+        dimensions: OmniSmall.Dimensions
+    ) async throws -> [Float] {
+        guard case let .passthrough(input) = prepared.payload else {
+            throw OmniSmallBackendError.failure("this backend cannot execute natively prepared media")
+        }
+        return try await embedMedia(input, role: prepared.role, dimensions: dimensions)
+    }
+
+    func verifyAllFunctions(
+        validateEmbedding: @escaping @Sendable ([Float]) throws -> Void,
+        progress: (@Sendable (OmniSmallFunctionCheck) -> Void)?
+    ) async throws -> OmniSmallVerificationReport {
+        throw OmniSmallVerificationError(
+            function: "setup",
+            reason: .setupFailed("this backend has no native Core ML functions to verify"),
+            report: OmniSmallVerificationReport(functions: [], wallMilliseconds: 0))
+    }
 }
 
 /// A text row that passed production preparation: tokenized with its retrieval conditioning and
@@ -812,6 +985,11 @@ enum OmniSmallInputLimits {
     static let maximumTextTokens = 32_768
     static let maximumImageBytes = 20 * 1_048_576
     static let maximumAudioSamples = 480_000
+    /// Three 10 ms mel frames (30 ms at 16 kHz). The audio tower pools the mel frames twice
+    /// (`(n - 1) // 2 + 1`, then `(x - 2) // 2 + 1`), which leaves NO token for one or two frames
+    /// and one for three; a clip with no token has nothing to embed. 160 samples (one frame) used
+    /// to pass this check and reach a decoder that had no features to scatter.
+    static let minimumAudioSamples = 480
     /// AVAudioFile expands the whole source to Float32 before resampling. A short, highly
     /// multichannel or high-rate compressed file can otherwise allocate gigabytes first.
     static let maximumDecodedSourceAudioBytes = 128 * 1_048_576
@@ -846,9 +1024,10 @@ enum OmniSmallInputLimits {
     }
 
     static func validateDecodedAudio(sampleCount: Int) throws {
-        guard sampleCount >= 160 else {
+        guard sampleCount >= minimumAudioSamples else {
             throw OmniSmallBackendError.invalidInput(
-                "audio must contain at least one 10 ms mel frame")
+                "audio must contain at least \(minimumAudioSamples) samples "
+                    + "(30 ms at 16 kHz, three 10 ms mel frames); got \(sampleCount)")
         }
         guard sampleCount <= maximumAudioSamples else {
             throw OmniSmallBackendError.invalidInput(
@@ -857,19 +1036,57 @@ enum OmniSmallInputLimits {
     }
 }
 
-private actor OmniSmallProductionBackend: OmniSmallBackend {
+/// Fault injection for verification tests; `nil` in production.
+typealias OmniSmallVerificationFaultInjector = OmniSmallFunctionVerifier.FaultInjector
+
+actor OmniSmallProductionBackend: OmniSmallBackend {
     private let bundle: GlossModelBundle
+    /// CPU-side components and preparers. Pure `Sendable` values, so media preparation reads them
+    /// from any thread without touching this actor.
+    private nonisolated let host: OmniSmallMediaHost
+    private nonisolated let executor: MediaPreparationExecutor
+    private let verificationFaults: OmniSmallVerificationFaultInjector?
     private var textEmbedder: GlossTextEmbedder?
     private var textLoadTask: Task<Void, any Error>?
+    private var mediaDecoder: GeneralMediaDecoder?
     private var imageEmbedder: GlossImageEmbedderMasked?
     private var audioEmbedder: GlossAudioEmbedderMasked?
     private var videoEmbedder: GlossVideoEmbedderMasked?
 
-    init(bundle: GlossModelBundle) {
+    init(
+        bundle: GlossModelBundle,
+        executor: MediaPreparationExecutor = .shared,
+        temporaryDirectory: URL = FileManager.default.temporaryDirectory,
+        verificationFaults: OmniSmallVerificationFaultInjector? = nil
+    ) {
         self.bundle = bundle
+        self.host = OmniSmallMediaHost(bundle: bundle, temporaryDirectory: temporaryDirectory)
+        self.executor = executor
+        self.verificationFaults = verificationFaults
     }
 
     private func resolve(_ path: String) -> URL { bundle.resolve(path) }
+
+    /// The ONE media decoder (embed + decoder functions) shared by the image, audio, and video
+    /// pipelines. Sharing means each decoder bucket loads once for all three modalities — less
+    /// memory, no duplicate cold loads, and a function that verification loaded through one
+    /// pipeline is already warm for the others.
+    private func requireMediaDecoder() throws -> GeneralMediaDecoder {
+        if let mediaDecoder { return mediaDecoder }
+        let manifest = bundle.manifest
+        guard let decoder = manifest.decoder else {
+            throw OmniSmallBackendError.failure("bundle manifest is missing the media decoder")
+        }
+        let shared = try GeneralMediaDecoder(
+            embedModelURL: resolve(decoder.embed),
+            decoderModelURL: resolve(decoder.model),
+            computeUnits: nil,
+            featDim: manifest.embeddingDimension,
+            padTokenID: manifest.tokens.padID,
+            sequenceBuckets: decoder.sequenceBuckets)
+        mediaDecoder = shared
+        return shared
+    }
 
     /// Image pipeline: masked ViT encoder + shared media decoder, built from the manifest sections
     /// the production validator already pinned. Cached on the actor, so a class pipeline that is
@@ -878,25 +1095,18 @@ private actor OmniSmallProductionBackend: OmniSmallBackend {
         if let imageEmbedder { return imageEmbedder }
         let manifest = bundle.manifest
         guard let image = manifest.image,
-              let decoder = manifest.decoder,
               let tokens = manifest.tokens.image else {
             throw OmniSmallBackendError.failure("bundle manifest is missing the image pipeline")
         }
         let pipeline = try GlossImageEmbedderMasked(
             visionModelURL: resolve(image.encoder),
-            embedModelURL: resolve(decoder.embed),
-            decoderModelURL: resolve(decoder.model),
-            resourcesDir: resolve(image.resources),
+            positions: try host.visionPositions(),
+            decoder: try requireMediaDecoder(),
             tokens: tokens.mediaTokens,
             featureDim: manifest.embeddingDimension,
             patchBuckets: image.patchBuckets,
-            padTokenID: manifest.tokens.padID,
-            preprocessor: GlossImagePreprocessor(
-                minPixels: image.preprocess.minPixels,
-                maxPixels: image.preprocess.maxPixels),
-            encoderUnits: .cpuAndGPU,
-            decoderUnits: nil,
-            sequenceBuckets: decoder.sequenceBuckets)
+            preprocessor: try host.imagePreprocessor(),
+            encoderUnits: .cpuAndGPU)
         imageEmbedder = pipeline
         return pipeline
     }
@@ -907,20 +1117,16 @@ private actor OmniSmallProductionBackend: OmniSmallBackend {
         if let audioEmbedder { return audioEmbedder }
         let manifest = bundle.manifest
         guard let audio = manifest.audio,
-              let decoder = manifest.decoder,
               let tokens = manifest.tokens.audio else {
             throw OmniSmallBackendError.failure("bundle manifest is missing the audio pipeline")
         }
         let pipeline = try GlossAudioEmbedderMasked(
             audioModelURL: resolve(audio.encoder),
-            embedModelURL: resolve(decoder.embed),
-            decoderModelURL: resolve(decoder.model),
+            mel: try host.melFrontend(),
+            decoder: try requireMediaDecoder(),
             tokens: tokens.mediaTokens,
             featureDim: manifest.embeddingDimension,
-            padTokenID: manifest.tokens.padID,
-            encoderUnits: .cpuAndGPU,
-            decoderUnits: nil,
-            sequenceBuckets: decoder.sequenceBuckets)
+            encoderUnits: .cpuAndGPU)
         audioEmbedder = pipeline
         return pipeline
     }
@@ -929,23 +1135,18 @@ private actor OmniSmallProductionBackend: OmniSmallBackend {
         if let videoEmbedder { return videoEmbedder }
         let manifest = bundle.manifest
         guard let video = manifest.video,
-              let image = manifest.image,
-              let decoder = manifest.decoder,
               let tokens = manifest.tokens.video else {
             throw OmniSmallBackendError.failure("bundle manifest is missing the video pipeline")
         }
         let pipeline = try GlossVideoEmbedderMasked(
             visionModelURL: resolve(video.encoder),
-            embedModelURL: resolve(decoder.embed),
-            decoderModelURL: resolve(decoder.model),
-            resourcesDir: resolve(image.resources),
+            positions: try host.visionPositions(),
+            decoder: try requireMediaDecoder(),
             tokens: tokens.mediaTokens,
             featureDim: manifest.embeddingDimension,
             patchBuckets: video.patchBuckets,
-            padTokenID: manifest.tokens.padID,
-            encoderUnits: .cpuAndGPU,
-            decoderUnits: nil,
-            sequenceBuckets: decoder.sequenceBuckets)
+            preprocessor: GlossImagePreprocessor(),
+            encoderUnits: .cpuAndGPU)
         videoEmbedder = pipeline
         return pipeline
     }
@@ -995,128 +1196,106 @@ private actor OmniSmallProductionBackend: OmniSmallBackend {
         }
     }
 
+    /// One-step media embedding: the CPU phase on the executor, then the predictions here. The
+    /// server uses the two phases separately so preparation happens before the accelerator lane;
+    /// this composition serves the direct `OmniSmall.embed*` entry points.
     func embedMedia(
         _ input: OmniSmall.Input,
         role: OmniSmallRole,
         dimensions: OmniSmall.Dimensions
     ) async throws -> [Float] {
+        let prepared = try await prepareMedia(input, role: role)
+        return try await embedPreparedMedia(prepared, dimensions: dimensions)
+    }
+
+    /// The CPU phase. `nonisolated` on purpose: it neither runs on nor waits for this actor, so
+    /// preparing media never queues behind (or blocks) inference. The work itself runs on the
+    /// bounded ``MediaPreparationExecutor``.
+    nonisolated func prepareMedia(
+        _ input: OmniSmall.Input,
+        role: OmniSmallRole
+    ) async throws -> OmniSmallPreparedMedia {
         try Task.checkCancellation()
+        let host = self.host
+        let submitted = ContinuousClock.now
         do {
-            switch input {
-            case .text:
-                throw OmniSmallBackendError.failure("text input reached the media backend")
-            case let .image(url):
-                let image = try requireImagePipeline()
-                return try image.embed(
-                    imageURL: url,
-                    dim: dimensions.rawValue,
-                    prompt: role.prompt)
-            case let .imageData(data):
-                let image = try requireImagePipeline()
-                return try image.embed(
-                    imageData: data,
-                    dim: dimensions.rawValue,
-                    prompt: role.prompt)
-            case let .audio(url):
-                return try embedAudio(url, role: role, dimensions: dimensions)
-            case let .audioData(data):
-                return try withTemporaryMediaFile(data, extension: "wav") {
-                    try embedAudio($0, role: role, dimensions: dimensions)
-                }
-            case let .video(url):
-                return try requireVideoPipeline().embed(
-                    videoURL: url,
-                    dim: dimensions.rawValue,
-                    prompt: role.prompt)
-            case let .videoData(data):
-                return try withTemporaryMediaFile(data, extension: "mp4") {
-                    try requireVideoPipeline().embed(
-                        videoURL: $0,
-                        dim: dimensions.rawValue,
-                        prompt: role.prompt)
-                }
+            let outcome = try await executor.run { cancellation in
+                let started = ContinuousClock.now
+                let prepared = try OmniSmallMediaPreparation.prepare(
+                    input, role: role, host: host, cancellation: cancellation)
+                return (prepared.kind, prepared.payload, ContinuousClock.now - started)
             }
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch let error as GlossImagePreprocessor.ImageError {
-            throw OmniSmallBackendError.invalidInput(
-                "image input could not be decoded: \(error)")
-        } catch let error as GlossMelFrontend.MelError {
-            throw OmniSmallBackendError.invalidInput(
-                "audio input is invalid: \(error)")
-        } catch let error as GlossVideoFile.DecodeError {
-            throw OmniSmallBackendError.invalidInput(
-                "video input could not be decoded: \(error)")
-        } catch let error as VideoFrameDecoder.Failure {
-            throw OmniSmallBackendError.invalidInput(
-                "video input could not be decoded: \(error)")
-        } catch let error as VideoCoreMLEncoderMasked.EncoderError {
-            throw OmniSmallBackendError.invalidInput(
-                "video input is invalid: \(error)")
-        } catch let error as OmniSmallBackendError {
-            throw error
+            try Task.checkCancellation()
+            let total = ContinuousClock.now - submitted
+            let prepareMilliseconds = Self.milliseconds(outcome.2)
+            return OmniSmallPreparedMedia(
+                kind: outcome.0,
+                role: role,
+                prepareMilliseconds: prepareMilliseconds,
+                queuedMilliseconds: max(0, Self.milliseconds(total) - prepareMilliseconds),
+                payload: outcome.1)
         } catch {
-            throw OmniSmallBackendError.failure(String(describing: error))
+            throw OmniSmallMediaPreparation.backendError(from: error)
         }
     }
 
-    private func embedAudio(
-        _ url: URL,
-        role: OmniSmallRole,
+    /// The accelerator phase: Core ML predictions only.
+    func embedPreparedMedia(
+        _ prepared: OmniSmallPreparedMedia,
         dimensions: OmniSmall.Dimensions
-    ) throws -> [Float] {
-        let audio: [Float]
+    ) async throws -> [Float] {
+        try Task.checkCancellation()
         do {
-            audio = try decodeBoundedAudio(url)
+            switch prepared.payload {
+            case let .image(inputs):
+                return try requireImagePipeline().infer(inputs, dim: dimensions.rawValue)
+            case let .video(inputs):
+                return try requireVideoPipeline().infer(inputs, dim: dimensions.rawValue)
+            case let .audio(inputs):
+                return try requireAudioPipeline().infer(inputs, dim: dimensions.rawValue)
+            case .passthrough:
+                throw OmniSmallBackendError.failure("unprepared media reached the accelerator phase")
+            }
+        } catch {
+            throw OmniSmallMediaPreparation.backendError(from: error)
+        }
+    }
+
+    func verifyAllFunctions(
+        validateEmbedding: @escaping @Sendable ([Float]) throws -> Void,
+        progress: (@Sendable (OmniSmallFunctionCheck) -> Void)?
+    ) async throws -> OmniSmallVerificationReport {
+        let verifier: OmniSmallFunctionVerifier
+        do {
+            try await ensureTextLoaded()
+            guard let textEmbedder else {
+                throw OmniSmallBackendError.failure("text embedder did not initialize")
+            }
+            verifier = OmniSmallFunctionVerifier(
+                text: textEmbedder,
+                image: try requireImagePipeline(),
+                video: try requireVideoPipeline(),
+                audio: try requireAudioPipeline(),
+                decoder: try requireMediaDecoder(),
+                validateEmbedding: validateEmbedding,
+                progress: progress,
+                faults: verificationFaults)
         } catch is CancellationError {
             throw CancellationError()
-        } catch let error as OmniSmallBackendError {
-            throw error
         } catch {
-            throw OmniSmallBackendError.invalidInput(
-                "audio file could not be decoded: \(error)")
+            throw OmniSmallVerificationError(
+                function: "setup",
+                reason: .setupFailed(String(describing: error)),
+                report: OmniSmallVerificationReport(functions: [], wallMilliseconds: 0))
         }
-        guard !audio.isEmpty else {
-            throw OmniSmallBackendError.invalidInput("audio file contains no samples")
-        }
-        try OmniSmallInputLimits.validateDecodedAudio(sampleCount: audio.count)
-        guard audio.allSatisfy(\.isFinite) else {
-            throw OmniSmallBackendError.invalidInput("audio contains non-finite samples")
-        }
-        try Task.checkCancellation()
-        return try requireAudioPipeline().embed(
-            audio,
-            dim: dimensions.rawValue,
-            prompt: role.prompt)
+        // Synchronous by design: every function loads and runs on this actor, so it lands in the
+        // same caches that serve requests and nothing else touches the accelerator meanwhile.
+        return try verifier.run()
     }
 
-    private func withTemporaryMediaFile<T>(
-        _ data: Data,
-        extension fileExtension: String,
-        _ operation: (URL) throws -> T
-    ) throws -> T {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gloss-media-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: directory,
-            withIntermediateDirectories: false,
-            attributes: [.posixPermissions: 0o700])
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let file = directory.appendingPathComponent("input.\(fileExtension)")
-        try data.write(to: file, options: .atomic)
-        return try operation(file)
-    }
-
-    /// Reject clearly over-limit files from container metadata before allocating a decoded buffer.
-    /// The exact decoded sample count is checked again by the caller after resampling.
-    private func decodeBoundedAudio(_ url: URL) throws -> [Float] {
-        let file = try AVAudioFile(forReading: url)
-        let rate = file.processingFormat.sampleRate
-        try OmniSmallInputLimits.validateEstimatedAudio(
-            frameCount: file.length,
-            sampleRate: rate,
-            channelCount: file.processingFormat.channelCount)
-        return try GlossAudioFile.decode16kMono(url)
+    private static func milliseconds(_ duration: Duration) -> Double {
+        Double(duration.components.seconds) * 1_000
+            + Double(duration.components.attoseconds) / 1_000_000_000_000_000
     }
 
     private func ensureTextLoaded() async throws {
@@ -1211,7 +1390,7 @@ private struct OmniSmallLoadedBundle {
 
 private enum OmniSmallBundleValidator {
     private static let modelID = "jinaai/jina-embeddings-v5-omni-small"
-    private static let sourceRevision = "41a20a1e1f56dad91e3a55d52ac6dc13007d67a5"
+    private static let sourceRevision = "87f7a45d1ae0265843f8569c47fb53847cb193c3"
     private static let nativeDimensions = [32, 64, 128, 256, 512, 1024]
     private static let nativeTextBuckets = [
         32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768,
@@ -1266,8 +1445,13 @@ private enum OmniSmallBundleValidator {
         }
         guard manifest.source?.repo == modelID,
               manifest.source?.revision == sourceRevision else {
+            let found = manifest.source.map { "\($0.repo) revision \($0.revision ?? "none")" }
+                ?? "no source"
             throw OmniSmallError.invalidBundle(
-                "source must be pinned to \(modelID) revision \(sourceRevision)")
+                "source must be pinned to \(modelID) revision \(sourceRevision), found \(found). "
+                + "This binary serves one source revision (it is part of the space identity). "
+                + "Re-pin the bundle to that revision with GlossematicsCoreML "
+                + "python/converter/repin_bundle_source.py, or install the binary that matches the bundle.")
         }
         guard manifest.embeddingDimension == 1024,
               manifest.matryoshkaDimensions == nativeDimensions,
@@ -1523,8 +1707,10 @@ private enum OmniSmallBundleValidator {
                 "textMaxTokens=32768",
                 "image=16,2,262144,1310720,5120",
                 "audio=16000,480000,3000,3200",
-                // Identical to the SDK daemon's space identity, so text, image, and audio vectors
-                // indexed before stay valid. The video file recipe is reported separately
+                // The formula is unchanged from the SDK daemon's, but the source revision changed at
+                // the 87f7a45d re-pin (the earlier pin no longer resolves on the Hub), so every space
+                // ID differs from earlier builds: vectors from those builds are a different space and
+                // must be re-embedded. The video file recipe is reported separately
                 // (`OmniSmall.videoRecipe`); bump that when decoding, sampling, or resizing changes.
                 "decoder=2048",
             ].joined(separator: "\n")
