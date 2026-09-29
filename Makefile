@@ -7,6 +7,8 @@
 # ----- configuration ---------------------------------------------------------
 
 FIXTURE     ?= Fixtures/BidirLMOmni.dummy.bundle
+JINA_FIXTURE ?= Fixtures/JinaV5OmniSmall.w8a16.dummy.bundle
+JINA_SOURCE ?= ../GlossematicsCoreML/artifacts/JinaV5OmniSmall.w8a16.bundle
 BUNDLE      ?= $(FIXTURE)
 COMPUTE     ?= ane
 PYTHON      ?= python3
@@ -67,7 +69,7 @@ SERVER_ARGS = --bundle "$(BUNDLE)" --port "$(PORT)" $(FAMILY_ARGS) \
 	--shutdown-grace-seconds "$(SHUTDOWN_GRACE_SECONDS)" --access-log "$(ACCESS_LOG)"
 
 .DEFAULT_GOAL := help
-.PHONY: help build release fixture test test-release verify-model verify-jina dummy-bundle run install uninstall \
+.PHONY: help build release fixture test test-release verify-model verify-jina dummy-bundle jina-fixture package run install uninstall \
         restart status logs health live metrics models embed bench check-config export clean
 
 # ----- targets ---------------------------------------------------------------
@@ -88,13 +90,21 @@ $(FIXTURE_TABLE):
 
 fixture: $(FIXTURE_TABLE) ## write the fixture's zero token table (622 MB, gitignored)
 
-test: fixture ## unit tests + debug/release golden-fixture HTTP smoke
+test: fixture ## unit tests + debug/release golden-fixture HTTP smoke (BidirLM and Jina fixtures)
 	swift test
 	$(PYTHON) Scripts/test_server_http.py --server-bin "$(SERVER_BIN)" --bundle "$(FIXTURE)"
+	$(PYTHON) Scripts/test_jina_http.py --server-bin "$(SERVER_BIN)" --bundle "$(JINA_FIXTURE)"
 	$(MAKE) test-release
 
 test-release: release fixture ## golden-fixture HTTP smoke against the optimized binary
 	$(PYTHON) Scripts/test_server_http.py --server-bin "$(RELEASE_BIN)" --bundle "$(FIXTURE)"
+	$(PYTHON) Scripts/test_jina_http.py --server-bin "$(RELEASE_BIN)" --bundle "$(JINA_FIXTURE)"
+
+jina-fixture: ## regenerate the Jina no-op fixture from JINA_SOURCE (needs coremltools, torch: CONVERTER_PYTHON)
+	$(CONVERTER_PYTHON) Scripts/make_jina_dummy_bundle.py --source "$(JINA_SOURCE)" --output "$(JINA_FIXTURE)" --force
+
+package: ## signed disk image in dist/ (CODESIGN_IDENTITY=, NOTARIZE=1 with NOTARY_KEY_PATH/ID/ISSUER_ID)
+	Scripts/package_release.sh --identity "$${CODESIGN_IDENTITY:--}" $(if $(filter 1,$(NOTARIZE)),--notarize,)
 
 verify-model: release ## full-model gates on a sealed bundle: FP32 parity + HTTP (set BUNDLE=, COMPUTE=)
 	$(RELEASE_BIN) --bundle "$(BUNDLE)" --compute "$(COMPUTE)" --check-config
@@ -110,7 +120,8 @@ dummy-bundle: ## regenerate the no-op fixture (needs TOKENIZER=<bundle>/tokenize
 verify-jina: release ## Jina gates on BUNDLE: video goldens + HTTP parity (ORACLE=<old daemon URL> optional)
 	$(RELEASE_BIN) --bundle "$(BUNDLE)" --check-config
 	GLOSS_JINA_BUNDLE="$(abspath $(BUNDLE))" GLOSS_JINA_REFERENCE="$(abspath $(JINA_REFERENCE))" \
-		swift test --filter JinaFullModel
+		GLOSS_PRODUCTION_BUNDLE="$(abspath $(BUNDLE))" \
+		swift test --filter "JinaFullModel|productionModelRetrievalEndToEnd"
 	cd Scripts && $(CONVERTER_PYTHON) smoke_jina.py --server-bin "$(RELEASE_BIN)" --bundle "$(abspath $(BUNDLE))" \
 		--output "$(abspath dist/jina-smoke)" --video-reference ../reference/jina/video_reference.json \
 		$(if $(ORACLE),--oracle "$(ORACLE)",)

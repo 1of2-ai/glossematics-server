@@ -1,0 +1,368 @@
+[
+  {
+    "metadataOutputVersion" : "3.0",
+    "storagePrecision" : "Float32",
+    "outputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 50 × 1024)",
+        "shortDescription" : "",
+        "shape" : "[50, 1024]",
+        "name" : "audio_features",
+        "type" : "MultiArray"
+      }
+    ],
+    "modelParameters" : [
+
+    ],
+    "specificationVersion" : 9,
+    "functions" : [
+      {
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 128 × 200)",
+            "shortDescription" : "",
+            "shape" : "[128, 200]",
+            "name" : "packed_mel",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1 × 200)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 200]",
+            "name" : "conv_mask",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1 × 100 × 100)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 100, 100]",
+            "name" : "attn_bias",
+            "type" : "MultiArray"
+          }
+        ],
+        "computePrecision" : "Float32",
+        "storagePrecision" : "Float32",
+        "stateSchema" : [
+
+        ],
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 50 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[50, 1024]",
+            "name" : "audio_features",
+            "type" : "MultiArray"
+          }
+        ],
+        "name" : "f200",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 3,
+          "Ios18.add" : 3,
+          "Ios18.mul" : 2
+        }
+      },
+      {
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 128 × 400)",
+            "shortDescription" : "",
+            "shape" : "[128, 400]",
+            "name" : "packed_mel",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 2 × 1 × 200)",
+            "shortDescription" : "",
+            "shape" : "[2, 1, 200]",
+            "name" : "conv_mask",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1 × 200 × 200)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 200, 200]",
+            "name" : "attn_bias",
+            "type" : "MultiArray"
+          }
+        ],
+        "computePrecision" : "Float32",
+        "storagePrecision" : "Float32",
+        "stateSchema" : [
+
+        ],
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 100 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[100, 1024]",
+            "name" : "audio_features",
+            "type" : "MultiArray"
+          }
+        ],
+        "name" : "f400",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 3,
+          "Ios18.add" : 3,
+          "Ios18.mul" : 2
+        }
+      },
+      {
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 128 × 800)",
+            "shortDescription" : "",
+            "shape" : "[128, 800]",
+            "name" : "packed_mel",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 4 × 1 × 200)",
+            "shortDescription" : "",
+            "shape" : "[4, 1, 200]",
+            "name" : "conv_mask",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1 × 400 × 400)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 400, 400]",
+            "name" : "attn_bias",
+            "type" : "MultiArray"
+          }
+        ],
+        "computePrecision" : "Float32",
+        "storagePrecision" : "Float32",
+        "stateSchema" : [
+
+        ],
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 200 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[200, 1024]",
+            "name" : "audio_features",
+            "type" : "MultiArray"
+          }
+        ],
+        "name" : "f800",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 3,
+          "Ios18.add" : 3,
+          "Ios18.mul" : 2
+        }
+      },
+      {
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 128 × 1600)",
+            "shortDescription" : "",
+            "shape" : "[128, 1600]",
+            "name" : "packed_mel",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 8 × 1 × 200)",
+            "shortDescription" : "",
+            "shape" : "[8, 1, 200]",
+            "name" : "conv_mask",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1 × 800 × 800)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 800, 800]",
+            "name" : "attn_bias",
+            "type" : "MultiArray"
+          }
+        ],
+        "computePrecision" : "Float32",
+        "storagePrecision" : "Float32",
+        "stateSchema" : [
+
+        ],
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 400 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[400, 1024]",
+            "name" : "audio_features",
+            "type" : "MultiArray"
+          }
+        ],
+        "name" : "f1600",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 3,
+          "Ios18.add" : 3,
+          "Ios18.mul" : 2
+        }
+      },
+      {
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 128 × 3200)",
+            "shortDescription" : "",
+            "shape" : "[128, 3200]",
+            "name" : "packed_mel",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 16 × 1 × 200)",
+            "shortDescription" : "",
+            "shape" : "[16, 1, 200]",
+            "name" : "conv_mask",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1 × 1600 × 1600)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 1600, 1600]",
+            "name" : "attn_bias",
+            "type" : "MultiArray"
+          }
+        ],
+        "computePrecision" : "Float32",
+        "storagePrecision" : "Float32",
+        "stateSchema" : [
+
+        ],
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 800 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[800, 1024]",
+            "name" : "audio_features",
+            "type" : "MultiArray"
+          }
+        ],
+        "name" : "f3200",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 3,
+          "Ios18.add" : 3,
+          "Ios18.mul" : 2
+        }
+      }
+    ],
+    "mlProgramOperationTypeHistogram" : {
+      "Ios16.reduceSum" : 3,
+      "Ios18.add" : 3,
+      "Ios18.mul" : 2
+    },
+    "isUpdatable" : "0",
+    "stateSchema" : [
+
+    ],
+    "availability" : {
+      "macOS" : "15.0",
+      "tvOS" : "18.0",
+      "visionOS" : "2.0",
+      "watchOS" : "11.0",
+      "iOS" : "18.0",
+      "macCatalyst" : "18.0"
+    },
+    "computePrecision" : "Float32",
+    "modelType" : {
+      "name" : "MLModelType_mlProgram"
+    },
+    "inputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 128 × 200)",
+        "shortDescription" : "",
+        "shape" : "[128, 200]",
+        "name" : "packed_mel",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1 × 1 × 200)",
+        "shortDescription" : "",
+        "shape" : "[1, 1, 200]",
+        "name" : "conv_mask",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1 × 1 × 100 × 100)",
+        "shortDescription" : "",
+        "shape" : "[1, 1, 100, 100]",
+        "name" : "attn_bias",
+        "type" : "MultiArray"
+      }
+    ],
+    "defaultFunctionName" : "f200",
+    "generatedClassName" : "audio",
+    "userDefinedMetadata" : {
+
+    },
+    "method" : "predict"
+  }
+]

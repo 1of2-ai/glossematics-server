@@ -1,0 +1,374 @@
+[
+  {
+    "metadataOutputVersion" : "3.0",
+    "storagePrecision" : "Float32",
+    "outputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1 × 1024)",
+        "shortDescription" : "",
+        "shape" : "[1, 1024]",
+        "name" : "embedding",
+        "type" : "MultiArray"
+      }
+    ],
+    "modelParameters" : [
+
+    ],
+    "specificationVersion" : 9,
+    "functions" : [
+      {
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 128 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 128, 1024]",
+            "name" : "inputs_embeds",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Int32",
+            "formattedType" : "MultiArray (Int32 3 × 1 × 128)",
+            "shortDescription" : "",
+            "shape" : "[3, 1, 128]",
+            "name" : "position_ids",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 128)",
+            "shortDescription" : "",
+            "shape" : "[1, 128]",
+            "name" : "selector",
+            "type" : "MultiArray"
+          }
+        ],
+        "computePrecision" : "Float32",
+        "storagePrecision" : "Float32",
+        "stateSchema" : [
+
+        ],
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 1024]",
+            "name" : "embedding",
+            "type" : "MultiArray"
+          }
+        ],
+        "name" : "f128",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 3,
+          "Ios18.add" : 3,
+          "Ios18.cast" : 1,
+          "Ios18.mul" : 2
+        }
+      },
+      {
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 256 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 256, 1024]",
+            "name" : "inputs_embeds",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Int32",
+            "formattedType" : "MultiArray (Int32 3 × 1 × 256)",
+            "shortDescription" : "",
+            "shape" : "[3, 1, 256]",
+            "name" : "position_ids",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 256)",
+            "shortDescription" : "",
+            "shape" : "[1, 256]",
+            "name" : "selector",
+            "type" : "MultiArray"
+          }
+        ],
+        "computePrecision" : "Float32",
+        "storagePrecision" : "Float32",
+        "stateSchema" : [
+
+        ],
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 1024]",
+            "name" : "embedding",
+            "type" : "MultiArray"
+          }
+        ],
+        "name" : "f256",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 3,
+          "Ios18.add" : 3,
+          "Ios18.cast" : 1,
+          "Ios18.mul" : 2
+        }
+      },
+      {
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 512 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 512, 1024]",
+            "name" : "inputs_embeds",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Int32",
+            "formattedType" : "MultiArray (Int32 3 × 1 × 512)",
+            "shortDescription" : "",
+            "shape" : "[3, 1, 512]",
+            "name" : "position_ids",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 512]",
+            "name" : "selector",
+            "type" : "MultiArray"
+          }
+        ],
+        "computePrecision" : "Float32",
+        "storagePrecision" : "Float32",
+        "stateSchema" : [
+
+        ],
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 1024]",
+            "name" : "embedding",
+            "type" : "MultiArray"
+          }
+        ],
+        "name" : "f512",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 3,
+          "Ios18.add" : 3,
+          "Ios18.cast" : 1,
+          "Ios18.mul" : 2
+        }
+      },
+      {
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1024 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 1024, 1024]",
+            "name" : "inputs_embeds",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Int32",
+            "formattedType" : "MultiArray (Int32 3 × 1 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[3, 1, 1024]",
+            "name" : "position_ids",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 1024]",
+            "name" : "selector",
+            "type" : "MultiArray"
+          }
+        ],
+        "computePrecision" : "Float32",
+        "storagePrecision" : "Float32",
+        "stateSchema" : [
+
+        ],
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 1024]",
+            "name" : "embedding",
+            "type" : "MultiArray"
+          }
+        ],
+        "name" : "f1024",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 3,
+          "Ios18.add" : 3,
+          "Ios18.cast" : 1,
+          "Ios18.mul" : 2
+        }
+      },
+      {
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 2048 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1024]",
+            "name" : "inputs_embeds",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Int32",
+            "formattedType" : "MultiArray (Int32 3 × 1 × 2048)",
+            "shortDescription" : "",
+            "shape" : "[3, 1, 2048]",
+            "name" : "position_ids",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 2048)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048]",
+            "name" : "selector",
+            "type" : "MultiArray"
+          }
+        ],
+        "computePrecision" : "Float32",
+        "storagePrecision" : "Float32",
+        "stateSchema" : [
+
+        ],
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 1024]",
+            "name" : "embedding",
+            "type" : "MultiArray"
+          }
+        ],
+        "name" : "f2048",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 3,
+          "Ios18.add" : 3,
+          "Ios18.cast" : 1,
+          "Ios18.mul" : 2
+        }
+      }
+    ],
+    "mlProgramOperationTypeHistogram" : {
+      "Ios16.reduceSum" : 3,
+      "Ios18.add" : 3,
+      "Ios18.cast" : 1,
+      "Ios18.mul" : 2
+    },
+    "isUpdatable" : "0",
+    "stateSchema" : [
+
+    ],
+    "availability" : {
+      "macOS" : "15.0",
+      "tvOS" : "18.0",
+      "visionOS" : "2.0",
+      "watchOS" : "11.0",
+      "iOS" : "18.0",
+      "macCatalyst" : "18.0"
+    },
+    "computePrecision" : "Float32",
+    "modelType" : {
+      "name" : "MLModelType_mlProgram"
+    },
+    "inputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1 × 128 × 1024)",
+        "shortDescription" : "",
+        "shape" : "[1, 128, 1024]",
+        "name" : "inputs_embeds",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Int32",
+        "formattedType" : "MultiArray (Int32 3 × 1 × 128)",
+        "shortDescription" : "",
+        "shape" : "[3, 1, 128]",
+        "name" : "position_ids",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1 × 128)",
+        "shortDescription" : "",
+        "shape" : "[1, 128]",
+        "name" : "selector",
+        "type" : "MultiArray"
+      }
+    ],
+    "defaultFunctionName" : "f128",
+    "generatedClassName" : "decoder",
+    "userDefinedMetadata" : {
+
+    },
+    "method" : "predict"
+  }
+]

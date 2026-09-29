@@ -1,0 +1,565 @@
+[
+  {
+    "metadataOutputVersion" : "3.0",
+    "storagePrecision" : "Float32",
+    "outputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 256 × 1024)",
+        "shortDescription" : "",
+        "shape" : "[256, 1024]",
+        "name" : "vision_features",
+        "type" : "MultiArray"
+      }
+    ],
+    "modelParameters" : [
+
+    ],
+    "specificationVersion" : 9,
+    "functions" : [
+      {
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1024 × 1536)",
+            "shortDescription" : "",
+            "shape" : "[1024, 1536]",
+            "name" : "pixel_values",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1024 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1024, 1024]",
+            "name" : "pos_embeds",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1024 × 64)",
+            "shortDescription" : "",
+            "shape" : "[1024, 64]",
+            "name" : "rope_cos",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1024 × 64)",
+            "shortDescription" : "",
+            "shape" : "[1024, 64]",
+            "name" : "rope_sin",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1 × 1 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 1, 1024]",
+            "name" : "attn_bias",
+            "type" : "MultiArray"
+          }
+        ],
+        "computePrecision" : "Float32",
+        "storagePrecision" : "Float32",
+        "stateSchema" : [
+
+        ],
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 256 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[256, 1024]",
+            "name" : "vision_features",
+            "type" : "MultiArray"
+          }
+        ],
+        "name" : "f1024",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 5,
+          "Ios18.add" : 5,
+          "Ios18.mul" : 2
+        }
+      },
+      {
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1600 × 1536)",
+            "shortDescription" : "",
+            "shape" : "[1600, 1536]",
+            "name" : "pixel_values",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1600 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1600, 1024]",
+            "name" : "pos_embeds",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1600 × 64)",
+            "shortDescription" : "",
+            "shape" : "[1600, 64]",
+            "name" : "rope_cos",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1600 × 64)",
+            "shortDescription" : "",
+            "shape" : "[1600, 64]",
+            "name" : "rope_sin",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1 × 1 × 1600)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 1, 1600]",
+            "name" : "attn_bias",
+            "type" : "MultiArray"
+          }
+        ],
+        "computePrecision" : "Float32",
+        "storagePrecision" : "Float32",
+        "stateSchema" : [
+
+        ],
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 400 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[400, 1024]",
+            "name" : "vision_features",
+            "type" : "MultiArray"
+          }
+        ],
+        "name" : "f1600",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 5,
+          "Ios18.add" : 5,
+          "Ios18.mul" : 2
+        }
+      },
+      {
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 2304 × 1536)",
+            "shortDescription" : "",
+            "shape" : "[2304, 1536]",
+            "name" : "pixel_values",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 2304 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[2304, 1024]",
+            "name" : "pos_embeds",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 2304 × 64)",
+            "shortDescription" : "",
+            "shape" : "[2304, 64]",
+            "name" : "rope_cos",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 2304 × 64)",
+            "shortDescription" : "",
+            "shape" : "[2304, 64]",
+            "name" : "rope_sin",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1 × 1 × 2304)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 1, 2304]",
+            "name" : "attn_bias",
+            "type" : "MultiArray"
+          }
+        ],
+        "computePrecision" : "Float32",
+        "storagePrecision" : "Float32",
+        "stateSchema" : [
+
+        ],
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 576 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[576, 1024]",
+            "name" : "vision_features",
+            "type" : "MultiArray"
+          }
+        ],
+        "name" : "f2304",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 5,
+          "Ios18.add" : 5,
+          "Ios18.mul" : 2
+        }
+      },
+      {
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 3072 × 1536)",
+            "shortDescription" : "",
+            "shape" : "[3072, 1536]",
+            "name" : "pixel_values",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 3072 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[3072, 1024]",
+            "name" : "pos_embeds",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 3072 × 64)",
+            "shortDescription" : "",
+            "shape" : "[3072, 64]",
+            "name" : "rope_cos",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 3072 × 64)",
+            "shortDescription" : "",
+            "shape" : "[3072, 64]",
+            "name" : "rope_sin",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1 × 1 × 3072)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 1, 3072]",
+            "name" : "attn_bias",
+            "type" : "MultiArray"
+          }
+        ],
+        "computePrecision" : "Float32",
+        "storagePrecision" : "Float32",
+        "stateSchema" : [
+
+        ],
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 768 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[768, 1024]",
+            "name" : "vision_features",
+            "type" : "MultiArray"
+          }
+        ],
+        "name" : "f3072",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 5,
+          "Ios18.add" : 5,
+          "Ios18.mul" : 2
+        }
+      },
+      {
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 4032 × 1536)",
+            "shortDescription" : "",
+            "shape" : "[4032, 1536]",
+            "name" : "pixel_values",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 4032 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[4032, 1024]",
+            "name" : "pos_embeds",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 4032 × 64)",
+            "shortDescription" : "",
+            "shape" : "[4032, 64]",
+            "name" : "rope_cos",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 4032 × 64)",
+            "shortDescription" : "",
+            "shape" : "[4032, 64]",
+            "name" : "rope_sin",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1 × 1 × 4032)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 1, 4032]",
+            "name" : "attn_bias",
+            "type" : "MultiArray"
+          }
+        ],
+        "computePrecision" : "Float32",
+        "storagePrecision" : "Float32",
+        "stateSchema" : [
+
+        ],
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1008 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1008, 1024]",
+            "name" : "vision_features",
+            "type" : "MultiArray"
+          }
+        ],
+        "name" : "f4032",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 5,
+          "Ios18.add" : 5,
+          "Ios18.mul" : 2
+        }
+      },
+      {
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 5120 × 1536)",
+            "shortDescription" : "",
+            "shape" : "[5120, 1536]",
+            "name" : "pixel_values",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 5120 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[5120, 1024]",
+            "name" : "pos_embeds",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 5120 × 64)",
+            "shortDescription" : "",
+            "shape" : "[5120, 64]",
+            "name" : "rope_cos",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 5120 × 64)",
+            "shortDescription" : "",
+            "shape" : "[5120, 64]",
+            "name" : "rope_sin",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1 × 1 × 1 × 5120)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 1, 5120]",
+            "name" : "attn_bias",
+            "type" : "MultiArray"
+          }
+        ],
+        "computePrecision" : "Float32",
+        "storagePrecision" : "Float32",
+        "stateSchema" : [
+
+        ],
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float32",
+            "formattedType" : "MultiArray (Float32 1280 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1280, 1024]",
+            "name" : "vision_features",
+            "type" : "MultiArray"
+          }
+        ],
+        "name" : "f5120",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 5,
+          "Ios18.add" : 5,
+          "Ios18.mul" : 2
+        }
+      }
+    ],
+    "mlProgramOperationTypeHistogram" : {
+      "Ios16.reduceSum" : 5,
+      "Ios18.add" : 5,
+      "Ios18.mul" : 2
+    },
+    "isUpdatable" : "0",
+    "stateSchema" : [
+
+    ],
+    "availability" : {
+      "macOS" : "15.0",
+      "tvOS" : "18.0",
+      "visionOS" : "2.0",
+      "watchOS" : "11.0",
+      "iOS" : "18.0",
+      "macCatalyst" : "18.0"
+    },
+    "computePrecision" : "Float32",
+    "modelType" : {
+      "name" : "MLModelType_mlProgram"
+    },
+    "inputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1024 × 1536)",
+        "shortDescription" : "",
+        "shape" : "[1024, 1536]",
+        "name" : "pixel_values",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1024 × 1024)",
+        "shortDescription" : "",
+        "shape" : "[1024, 1024]",
+        "name" : "pos_embeds",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1024 × 64)",
+        "shortDescription" : "",
+        "shape" : "[1024, 64]",
+        "name" : "rope_cos",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1024 × 64)",
+        "shortDescription" : "",
+        "shape" : "[1024, 64]",
+        "name" : "rope_sin",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1 × 1 × 1 × 1024)",
+        "shortDescription" : "",
+        "shape" : "[1, 1, 1, 1024]",
+        "name" : "attn_bias",
+        "type" : "MultiArray"
+      }
+    ],
+    "defaultFunctionName" : "f1024",
+    "generatedClassName" : "image",
+    "userDefinedMetadata" : {
+
+    },
+    "method" : "predict"
+  }
+]

@@ -1047,6 +1047,9 @@ private actor OmniSmallProductionBackend: OmniSmallBackend {
         } catch let error as GlossVideoFile.DecodeError {
             throw OmniSmallBackendError.invalidInput(
                 "video input could not be decoded: \(error)")
+        } catch let error as VideoFrameDecoder.Failure {
+            throw OmniSmallBackendError.invalidInput(
+                "video input could not be decoded: \(error)")
         } catch let error as VideoCoreMLEncoderMasked.EncoderError {
             throw OmniSmallBackendError.invalidInput(
                 "video input is invalid: \(error)")

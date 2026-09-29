@@ -181,14 +181,18 @@ green.
 
 ## Tests
 
-The checked-in fixture (`Fixtures/BidirLMOmni.dummy.bundle`) is a real compiled Core ML bundle
-with the production manifest contract, the real tokenizer, every function signature (text
-stacks, long-input functions, attention buckets, and vision and audio towers), and checksums.
-Every function is a no-op that returns the unit vector e0. It proves the serving path, not
-model quality. The server requires `--allow-dummy` to load it and labels every response.
+Two checked-in Core ML golden fixtures (`Fixtures/`, see its README) prove the serving path, not
+model quality. Each is a real compiled bundle with its family's production contract, real
+tokenizer, every function signature, and checksums, and each function is a no-op:
+
+- `BidirLMOmni.dummy.bundle` returns the unit vector e0.
+- `JinaV5OmniSmall.w8a16.dummy.bundle` returns `1/32 * ones(1024)`; it is regenerated with
+  `make jina-fixture` (`Scripts/make_jina_dummy_bundle.py`, restored from the pre-BidirLM daemon).
+
+The server requires `--allow-dummy` to load either one and labels every response.
 
 ```bash
-make test           # unit tests + fixture HTTP smoke (text, packing, long input, image, audio, message)
+make test           # unit tests + both fixtures' HTTP smoke, debug and release binaries
 make test-release
 make verify-model BUNDLE=/path/to/BidirLMOmni.w8a16.bundle COMPUTE=ane   # also gpu, cpu
 ```
@@ -213,6 +217,14 @@ make verify-jina BUNDLE=/path/to/JinaV5OmniSmall.w8a16.bundle [ORACLE=http://127
 an SDK-based daemon it also checks text, image, and audio parity against it. The MP4 references
 (`reference/jina/video_reference.json`) come from
 `GlossematicsCoreML/python/parity/export_video_http_refs.py`.
+
+## CI and releases
+
+GitHub Actions runs `make test` on every push and pull request. On `main`, on `v*` tags, and on
+manual runs it also builds a Developer ID signed, notarized, and stapled disk image; tags publish
+it as a GitHub Release. Setup takes five repository secrets (a Developer ID certificate and an App
+Store Connect API key) and no GitHub App; see [RELEASING.md](RELEASING.md). `make package`
+builds the same image locally.
 
 ## Operations
 
@@ -242,7 +254,11 @@ models. Stop it, or lower `--ane-program-budget`, which costs more on-demand rel
 - `Sources/gloss-server/Media/`: image decode and resample, WAV decode, and Whisper log-mel.
 - `Sources/gloss-server/`: HTTP transport, scheduler (packing and stepped long/media work),
   service, API schema, and docs.
-- `Fixtures/`: the no-op golden fixture (`make fixture` writes its 622 MB zero token table).
+- `Fixtures/`: the no-op golden fixtures for both families and two test videos (`make fixture`
+  writes the BidirLM fixture's 622 MB zero token table).
 - `reference/`: FP32 text and media goldens and the retrieval corpus (BidirLM), and MP4 video
   references (Jina).
-- `Scripts/`: launchd agent, fixture generator, HTTP smoke, and benchmarks.
+- `Scripts/`: launchd agent, fixture generators, HTTP smokes, release packaging
+  (`package_release.sh`), and benchmarks.
+- `.github/workflows/ci.yml`: tests on every push; signed, notarized disk images on `main` and
+  tags ([RELEASING.md](RELEASING.md)).

@@ -1,0 +1,279 @@
+{
+  "formatVersion": 2,
+  "modelID": "jinaai/jina-embeddings-v5-omni-small",
+  "embeddingDimension": 1024,
+  "matryoshkaDimensions": [
+    32,
+    64,
+    128,
+    256,
+    512,
+    1024
+  ],
+  "minimumDeployment": {
+    "macOS": "15.0",
+    "iOS": "18.0"
+  },
+  "source": {
+    "repo": "jinaai/jina-embeddings-v5-omni-small",
+    "revision": "41a20a1e1f56dad91e3a55d52ac6dc13007d67a5"
+  },
+  "converter": {
+    "name": "dummy-noop",
+    "version": "1.0.0",
+    "commit": null
+  },
+  "precision": {
+    "weights": "int8",
+    "activations": "float16"
+  },
+  "spaceID": "jinaai/jina-embeddings-v5-omni-small:1024:w8a16:native-v1",
+  "prompts": {
+    "query": "Query: ",
+    "document": "Document: "
+  },
+  "tokens": {
+    "pad": "<|endoftext|>",
+    "padID": 151643,
+    "image": {
+      "prefix": "<|im_start|>user\n<|vision_start|>",
+      "prefixIDs": [
+        151644,
+        872,
+        198,
+        151652
+      ],
+      "suffix": "<|vision_end|><|im_end|>\n",
+      "suffixIDs": [
+        151653,
+        151645,
+        198
+      ],
+      "placeholder": "<|image_pad|>",
+      "placeholderID": 151655,
+      "queryPrefixIDs": [
+        151644,
+        872,
+        198,
+        2859,
+        25,
+        220,
+        151652
+      ],
+      "documentPrefixIDs": [
+        151644,
+        872,
+        198,
+        7524,
+        25,
+        220,
+        151652
+      ]
+    },
+    "video": {
+      "prefix": "<|im_start|>user\n<|vision_start|>",
+      "prefixIDs": [
+        151644,
+        872,
+        198,
+        151652
+      ],
+      "suffix": "<|vision_end|><|im_end|>\n",
+      "suffixIDs": [
+        151653,
+        151645,
+        198
+      ],
+      "placeholder": "<|video_pad|>",
+      "placeholderID": 151656,
+      "queryPrefixIDs": [
+        151644,
+        872,
+        198,
+        2859,
+        25,
+        220,
+        151652
+      ],
+      "documentPrefixIDs": [
+        151644,
+        872,
+        198,
+        7524,
+        25,
+        220,
+        151652
+      ]
+    },
+    "audio": {
+      "prefix": "<|im_start|>user\n<|audio_start|>",
+      "prefixIDs": [
+        151644,
+        872,
+        198,
+        151670
+      ],
+      "suffix": "<|audio_end|><|im_end|>\n",
+      "suffixIDs": [
+        151671,
+        151645,
+        198
+      ],
+      "placeholder": "<|audio_pad|>",
+      "placeholderID": 151669,
+      "queryPrefixIDs": [
+        151644,
+        872,
+        198,
+        2859,
+        25,
+        220,
+        151670
+      ],
+      "documentPrefixIDs": [
+        151644,
+        872,
+        198,
+        7524,
+        25,
+        220,
+        151670
+      ]
+    }
+  },
+  "text": {
+    "model": "text_multifunc.mlmodelc",
+    "tokenizer": "jina-v5-omni-small",
+    "buckets": [
+      32,
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768
+    ],
+    "requiresAttentionMask": false,
+    "maxTokens": 32768,
+    "batch": {
+      "sizes": [
+        64,
+        32,
+        16,
+        8,
+        4
+      ],
+      "buckets": [
+        32,
+        64,
+        128,
+        256,
+        512
+      ]
+    }
+  },
+  "image": {
+    "encoder": "vision_tower_masked_multifunc.mlmodelc",
+    "resources": "vision_swift",
+    "patchBuckets": [
+      1024,
+      1600,
+      2304,
+      3072,
+      4032,
+      5120
+    ],
+    "preprocess": {
+      "patch": 16,
+      "merge": 2,
+      "minPixels": 262144,
+      "maxPixels": 1310720
+    }
+  },
+  "video": {
+    "encoder": "vision_tower_video_multifunc.mlmodelc",
+    "patchBuckets": [
+      256,
+      512,
+      1024,
+      2048
+    ]
+  },
+  "audio": {
+    "encoder": "audio_tower_masked_multifunc.mlmodelc",
+    "frameBuckets": [
+      200,
+      400,
+      800,
+      1600,
+      3200
+    ],
+    "sampleRate": 16000,
+    "maxSamples": 480000,
+    "maxFrames": 3000
+  },
+  "decoder": {
+    "embed": "embed_multifunc.mlmodelc",
+    "model": "decoder_embeds_multifunc.mlmodelc",
+    "sequenceBuckets": [
+      128,
+      256,
+      512,
+      1024,
+      2048
+    ]
+  },
+  "artifactChecksums": {
+    "algorithm": "sha256",
+    "files": {
+      "audio_tower_masked_multifunc.mlmodelc/analytics/coremldata.bin": "79988f94a97400e2ac4677c1e279f87c90b364349da172b0dd4f1eeb10271f4c",
+      "audio_tower_masked_multifunc.mlmodelc/coremldata.bin": "15724612a34ddccd538a174ec898a5810b0b212e6b40dd8c08d5ab19db3faae1",
+      "audio_tower_masked_multifunc.mlmodelc/metadata.json": "afa483578940b520509eee936e0546d20aa80334f430ba2871946da986c2e414",
+      "audio_tower_masked_multifunc.mlmodelc/model.mil": "9e7fc2942290fd4cbe00d1fa14a33fb2b9db7109f7e08ab9b8751c6684ee5cdc",
+      "audio_tower_masked_multifunc.mlmodelc/weights/weight.bin": "7b9df8d07942d699924808bb6e6e52ff521389e8b8fca55e4a8a0b1c6876967c",
+      "decoder_embeds_multifunc.mlmodelc/analytics/coremldata.bin": "b6894e30240852dd2b72f8686574222dab6e551bd05329fdab53178b56cc48df",
+      "decoder_embeds_multifunc.mlmodelc/coremldata.bin": "47e1c27e5e73663e6ec0313d2ad8b57544ee09d3851e64ee23c3fdac2d438673",
+      "decoder_embeds_multifunc.mlmodelc/metadata.json": "c76ece081ead2e704d31d334f201b9f747f2a80d1128d0d4984a800c7b925ce7",
+      "decoder_embeds_multifunc.mlmodelc/model.mil": "011f728fc1e0ca7668d2089bd2f567848271d45fa27356a6de9f4686ed6f1b3b",
+      "decoder_embeds_multifunc.mlmodelc/weights/weight.bin": "54417833047aa6bcf6038c3fba54496f6193208fe361b08c452fe5b316a4b0e2",
+      "embed_multifunc.mlmodelc/analytics/coremldata.bin": "bffa7128c51aaae2ef1b4f1983ea9b0cc980782b43bd772c443ec4de45a1d1bb",
+      "embed_multifunc.mlmodelc/coremldata.bin": "fe88a55cd8b365cd970f9951ed7448ffa5c9ab6080495b0c77125334c65cf553",
+      "embed_multifunc.mlmodelc/metadata.json": "39e50552f941ae536a71f02fd98a3bb013856f9ac7ca855a73dc06437e392806",
+      "embed_multifunc.mlmodelc/model.mil": "551bc8353c0587e72dee96c0a6a830e8bc73e4391d6046d6e892d76804638541",
+      "embed_multifunc.mlmodelc/weights/weight.bin": "7e1872ed35259393c99a11f8a34d57a330c094359a724de6a59ffb4c625895a4",
+      "jina-v5-omni-small/config.json": "8074de43ca910f2a1922be18664268a101531813bc41d3a96f80d55695b8749c",
+      "jina-v5-omni-small/tokenizer.json": "7bbf567d9e053a72f0bd8ea475e672d10d537578f6adb521ab42da2badfa8bef",
+      "jina-v5-omni-small/tokenizer_config.json": "b78dba953d672b6e7e73276b47644527c5e8c59036d78ffb1abd9617187b95ee",
+      "text_multifunc.mlmodelc/analytics/coremldata.bin": "cf654472aafb07f787cbf6d4a3109e6ef1e46a32ec50de0194dfd7b95eb96aa7",
+      "text_multifunc.mlmodelc/coremldata.bin": "d006908747c2bde2a99816ec5e93140bf0fcef45662c5f39d25c4eb63723c8d8",
+      "text_multifunc.mlmodelc/metadata.json": "47335a5cc3b1041c9ef80542666f6ae4dc667fb1bbc40414f06fb29e5e97f71f",
+      "text_multifunc.mlmodelc/model.mil": "42b3f69db8faef1805432338aabf2f4b18096f7211bcfc0f8670a31dc145d278",
+      "text_multifunc.mlmodelc/weights/weight.bin": "dc99b1b4850cd38875e893d5f6046c1f4a24d46a2835834dadb96e301cfede45",
+      "vision_swift/meta.json": "395b1f80d684a1ba8a1386bc35f0a63f5d8a6526c7bfe7e15808a75b7e6a6c84",
+      "vision_swift/pos_embed_table.f32": "7dfb2506f3eb27d3c899d8c087bab761aaac73b74a2859d3a9cbf74e37d1953c",
+      "vision_swift/rope_inv_freq.f32": "9cc63b858a37a16bf14e559754d6fee5f50ae74aabfce29fec9097b70902849c",
+      "vision_tower_masked_multifunc.mlmodelc/analytics/coremldata.bin": "6ce264fe2801f88e7aa19a7914e6b4467c1b62dff7cf95714ed79c4a61f647a7",
+      "vision_tower_masked_multifunc.mlmodelc/coremldata.bin": "e0857c535268da596dbe2c0c716900af1e2cf768f2dc2b5fa4ee0fe0ac151447",
+      "vision_tower_masked_multifunc.mlmodelc/metadata.json": "bec813a84d56b4ed1bba76eb4e55a037fbe102fb9f1772a8b27af29651d36581",
+      "vision_tower_masked_multifunc.mlmodelc/model.mil": "302fba34d48deebe9b83fccbc1509a744d278b3ca58a6afc49324ee973483b69",
+      "vision_tower_masked_multifunc.mlmodelc/weights/weight.bin": "c915b33bc2e3d0f5ee9a8de905e7c3014d999eaa18bd45ca87bad698cb47386e",
+      "vision_tower_video_multifunc.mlmodelc/analytics/coremldata.bin": "39e8f3e26342e72e3ba0eabca428406b7f1cc2956c8149a88eb9c4230570e7d0",
+      "vision_tower_video_multifunc.mlmodelc/coremldata.bin": "db008c0c3c930e090875cefc8e4794a50b55239b532ff335b517dfc18fffa7b5",
+      "vision_tower_video_multifunc.mlmodelc/metadata.json": "b19211e105daeb483a8b12a8b9e5d8c777535ea93eb1d80e08dccf4951bed828",
+      "vision_tower_video_multifunc.mlmodelc/model.mil": "56c2469492b704362de520711365c0cb4ddceb8afcc274a05bf67902e5015d87",
+      "vision_tower_video_multifunc.mlmodelc/weights/weight.bin": "a076de321e40fba91e730f1398d8fd99c15b7958188af62e604bdf06ab29a4d0"
+    }
+  },
+  "compiled": {
+    "format": "mlmodelc",
+    "tool": "coremlcompiler",
+    "platform": "macOS",
+    "deploymentTarget": "15.0",
+    "compilerVersion": "Xcode 27.0 / Build version 27A266a",
+    "commit": null
+  }
+}

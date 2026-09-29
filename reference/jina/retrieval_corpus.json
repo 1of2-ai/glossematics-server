@@ -1,0 +1,125 @@
+{
+  "seed": 42,
+  "topics": [
+    {
+      "name": "pizza",
+      "query": "What is the trick to a blistering, crackly base when you bake at home?",
+      "docs": [
+        "A home oven rarely reaches the heat a wood-fired oven gets, so preheat the steel for at least forty-five minutes at the highest setting to build stored energy under the dough.",
+        "The Maillard reaction that browns and chars the rim needs both high deck temperature and low water activity in the crust, which is why bakers stretch the edge thinner than the center.",
+        "Stretching dough by hand from the center outward traps gas bubbles and keeps the cornicione light; a rolling pin flattens those pockets and produces a dense, cracker-like base.",
+        "Semolina dusted under the skin prevents sticking without adding moisture, letting the pizza slide off the peel and onto a screaming-hot stone without tearing.",
+        "Baking the pie directly on a steel rather than a tray conducts heat fast enough to set the base in under four minutes, before the cheese browns past its point.",
+        "Cold-fermenting the dough for a day or two develops gluten and flavor; the finished crust blisters because long fermentation leaves sugars the oven can caramelize.",
+        "A thin, even layer of sauce keeps the center from pooling into a soggy patch, so the base stays crisp right up to the middle of the pie.",
+        "Turning the pizza once halfway through its bake evens out hot and cool spots in a domestic oven, giving an evenly leopard-spotted rim instead of a burnt edge."
+      ],
+      "baits": [
+        {
+          "topic": "climate",
+          "text": "During a blistering heatwave the trick is to keep the base of the house shaded; baking indoors only adds heat, so most families cook outside instead."
+        },
+        {
+          "topic": "cats",
+          "text": "A kitten's ear can develop a crackly, blistering crust at the base when it stays in a cold home; the trick is to keep the room warm and dry."
+        }
+      ]
+    },
+    {
+      "name": "climate",
+      "query": "What forces the gradual rise in average surface temperature over decades?",
+      "docs": [
+        "Carbon dioxide traps outgoing infrared radiation, and the added greenhouse effect raises the global energy balance even as precipitation patterns shift between regions.",
+        "Warming oceans release water vapor, itself a greenhouse gas, which amplifies the original forcing in a feedback loop that accelerates the trend.",
+        "Meltwater from glaciers and ice sheets enters the sea, so global mean sea level rises even while some coastlines experience faster local increases than others.",
+        "The extra heat is not distributed evenly: the poles warm faster than the tropics, which reshapes jet streams and moves storm tracks toward higher latitudes.",
+        "A warmer atmosphere holds more moisture, so dry regions tend to get drier while wet ones see heavier downpours, producing a more uneven rainfall pattern overall.",
+        "Permafrost thaws release methane, a short-lived but potent gas, adding another positive feedback that keeps the temperature climbing.",
+        "Cloud cover changes with warming and can either shade the surface or trap heat, so regional temperatures respond differently even under the same global forcing.",
+        "Ocean heat uptake slows the rise in air temperature for decades, but the stored heat eventually returns to the surface and sustains long-term warming."
+      ],
+      "baits": [
+        {
+          "topic": "tennis",
+          "text": "Average serve speeds and player fitness have risen in gradual steps over the decades, and the modern hard surface rewards that change."
+        },
+        {
+          "topic": "swift",
+          "text": "Over the decades, average CPU temperatures forced a gradual rise in surface clock speeds, so modern chips throttle more aggressively."
+        }
+      ]
+    },
+    {
+      "name": "swift",
+      "query": "How do you keep shared state safe when several tasks run at once?",
+      "docs": [
+        "An actor isolates its mutable state behind a serial executor, so concurrent tasks that call into it are serialized and can never observe a torn value.",
+        "Swift's strict concurrency checking catches data races at compile time when value types are passed across task boundaries instead of being captured by reference.",
+        "A lock around a mutable property guarantees mutual exclusion, but the wait can be avoided entirely by structuring the work so each task owns its own copy of the data.",
+        "Task groups let you spawn child tasks and await them collectively, keeping the shared coordination on one actor while the heavy work runs off it.",
+        "Sendable marks the boundary: only types that are safe to share across concurrency domains may cross an actor's isolation, and the compiler enforces the rule.",
+        "MainActor serializes UI updates onto the main run loop, so background tasks that mutate visible state hop through it rather than racing with the renderer.",
+        "A semaphore throttles how many tasks touch a limited resource at once, protecting shared state by limiting the concurrency that can reach it.",
+        "Copying immutable value types is cheap and race-free, so preferring structs over shared reference types removes most of the need for locks in the first place."
+      ],
+      "baits": [
+        {
+          "topic": "tennis",
+          "text": "Several tasks on a tennis court run at once and the shared state of the score must be kept safe, so the umpire announces every point."
+        },
+        {
+          "topic": "climate",
+          "text": "When several weather stations run at once, keeping their shared state safe matters: a single failed task can corrupt the whole dataset."
+        }
+      ]
+    },
+    {
+      "name": "cats",
+      "query": "Which breed sheds little and is often recommended for people with allergies?",
+      "docs": [
+        "The Siberian cat produces less of the Fel d 1 protein that triggers most allergic reactions, which is why many allergy sufferers report milder symptoms around it.",
+        "A Sphynx has no coat at all, so it sheds nothing, though its skin still needs regular bathing to manage the oils a fur coat would normally absorb.",
+        "The Balinese, a long-haired Siamese variant, is frequently claimed to produce lower levels of the allergen that causes sneezing and itchy eyes in sensitive owners.",
+        "Regular brushing dramatically cuts the loose fur and dander floating around a home, which matters more to many allergic owners than the cat itself.",
+        "The Cornish Rex has only a fine undercoat of soft waves, so it sheds far less than a double-coated breed while still needing gentle grooming.",
+        "Allergens cling to fur and dander, so a short-haired breed that is brushed weekly sheds fewer particles into the air and onto upholstery.",
+        "The Devon Rex's short, curly coat breaks off in tiny pieces rather than long hairs, reducing the visible shedding that bothers many households.",
+        "Air purifiers and frequent washing of bedding reduce airborne allergen levels for any breed, so owners of low-shedding cats still see benefits from these habits."
+      ],
+      "baits": [
+        {
+          "topic": "climate",
+          "text": "This region's dry breed of grass sheds little pollen, and people with allergies are often recommended to avoid it during summer."
+        },
+        {
+          "topic": "pizza",
+          "text": "This breed of oven sheds little heat, and bakers often recommend it for people who bake at night despite allergies to smoke."
+        }
+      ]
+    },
+    {
+      "name": "tennis",
+      "query": "How is a locked score at the end of a final frame decided in modern tournaments?",
+      "docs": [
+        "Many tournaments decide a locked set at six games all with a tiebreak played to seven points, won by a margin of two, except in the final set of majors.",
+        "The final set of the Grand Slams no longer goes on indefinitely: most now use a tiebreak at twelve all, with only the fifth set of the Australian Open keeping a long-form format.",
+        "In a standard set tiebreak the player who served first in the set serves once, then the serve alternates every two points until someone leads by two.",
+        "Wimbledon's deciding set once produced marathons that lasted hours, so it adopted a first-to-ten tiebreak with a two-point margin for its final set.",
+        "The tiebreak winner takes the set and, if it was the deciding set, the match, so the player who wins it also advances in the tournament.",
+        "When a tiebreak is avoided by a two-game lead, the set continues until one player is ahead by two games, which is why early sets can stretch past six all.",
+        "A match tiebreak, played to ten points instead of seven, replaces the final set entirely in doubles and in many team competitions to keep matches short.",
+        "Serving first in the tiebreak matters because the serve alternates after the opening point, giving each player a slight rhythm advantage at different stages."
+      ],
+      "baits": [
+        {
+          "topic": "pizza",
+          "text": "The modern oven's final frame is decided at the end of the bake: a locked probe score confirms the center is done."
+        },
+        {
+          "topic": "cats",
+          "text": "The cattery's modern wing frames the final judging end-to-end: the locked ledger scores every cat's health at the close of the season."
+        }
+      ]
+    }
+  ]
+}

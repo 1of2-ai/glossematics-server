@@ -1,0 +1,102 @@
+{
+  "architectures": [
+    "JinaEmbeddingsV5OmniModel"
+  ],
+  "auto_map": {
+    "AutoConfig": "modeling_jina_embeddings_v5_omni.JinaEmbeddingsV5OmniConfig",
+    "AutoModel": "modeling_jina_embeddings_v5_omni.JinaEmbeddingsV5OmniModel"
+  },
+  "model_type": "jina_embeddings_v5_omni",
+  "task_names": [
+    "retrieval",
+    "text-matching",
+    "clustering",
+    "classification"
+  ],
+  "special_token_ids": [
+    151652,
+    151653,
+    151655,
+    151656,
+    151669,
+    151670,
+    151671
+  ],
+  "vision_config": {
+    "deepstack_visual_indexes": [],
+    "depth": 24,
+    "dtype": "bfloat16",
+    "hidden_act": "gelu_pytorch_tanh",
+    "hidden_size": 1024,
+    "in_channels": 3,
+    "initializer_range": 0.02,
+    "intermediate_size": 4096,
+    "model_type": "",
+    "num_heads": 16,
+    "num_position_embeddings": 2304,
+    "out_hidden_size": 1024,
+    "patch_size": 16,
+    "spatial_merge_size": 2,
+    "temporal_patch_size": 2
+  },
+  "text_config": {
+    "attention_bias": false,
+    "attention_dropout": 0.0,
+    "dtype": "bfloat16",
+    "head_dim": 128,
+    "hidden_act": "silu",
+    "hidden_size": 1024,
+    "initializer_range": 0.02,
+    "intermediate_size": 3072,
+    "max_position_embeddings": 32768,
+    "model_type": "",
+    "num_attention_heads": 16,
+    "num_hidden_layers": 28,
+    "num_key_value_heads": 8,
+    "pad_token_id": null,
+    "rms_norm_eps": 1e-06,
+    "rope_parameters": {
+      "rope_theta": 3500000,
+      "rope_type": "default"
+    },
+    "tie_word_embeddings": true,
+    "vocab_size": 151672
+  },
+  "audio_config": {
+    "activation_dropout": 0.0,
+    "activation_function": "gelu",
+    "attention_dropout": 0.0,
+    "d_model": 1280,
+    "dropout": 0.0,
+    "dtype": "float32",
+    "encoder_attention_heads": 20,
+    "encoder_ffn_dim": 5120,
+    "encoder_layers": 32,
+    "initializer_range": 0.02,
+    "max_source_positions": 1500,
+    "num_mel_bins": 128,
+    "scale_embedding": false,
+    "n_window": 100,
+    "output_dim": 3584
+  },
+  "image_token_id": 151655,
+  "video_token_id": 151656,
+  "vision_start_token_id": 151652,
+  "vision_end_token_id": 151653,
+  "audio_token_id": 151669,
+  "audio_start_token_id": 151670,
+  "audio_end_token_id": 151671,
+  "tie_word_embeddings": false,
+  "dtype": "bfloat16",
+  "transformers_version": "5.4.0",
+  "torch_dtype": "bfloat16",
+  "is_matryoshka": true,
+  "matryoshka_dimensions": [
+    32,
+    64,
+    128,
+    256,
+    512,
+    1024
+  ]
+}
