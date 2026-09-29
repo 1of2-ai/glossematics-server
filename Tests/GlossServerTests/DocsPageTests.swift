@@ -37,6 +37,27 @@ final class DocsPageTests: XCTestCase {
         XCTAssertTrue(html.contains("32768 tokens"))
         XCTAssertTrue(html.contains("text · image · audio · message"))
     }
+    func testJinaPageRendersTheJinaContract() {
+        var jina = context
+        jina = .init(
+            baseURL: jina.baseURL, modelID: "jinaai/jina-embeddings-v5-omni-small", dimensions: 1024,
+            maxTokens: 32768, compute: "auto", modalities: ["text", "image", "audio", "video"],
+            maxBatch: jina.maxBatch, maxRequestTokens: jina.maxRequestTokens, maxBodyMB: jina.maxBodyMB,
+            maxTotalBodyMB: jina.maxTotalBodyMB, maxQueueRequests: jina.maxQueueRequests,
+            maxQueueItems: jina.maxQueueItems, batchWindowMS: jina.batchWindowMS,
+            keepWarmSeconds: jina.keepWarmSeconds, maxConnections: jina.maxConnections,
+            ioTimeoutSeconds: jina.ioTimeoutSeconds, shutdownGraceSeconds: jina.shutdownGraceSeconds,
+            accessLogMode: jina.accessLogMode, spaceID: "glossematics:omni-small:sha256:abc",
+            family: .jinaOmniSmall, matryoshka: [1024, 32, 64, 128, 256, 512])
+        XCTAssertNil(DocsPage.validationError(jina))
+        let html = DocsPage.render(jina) ?? ""
+        XCTAssertFalse(html.contains("{{"))
+        XCTAssertTrue(html.contains("32 / 64 / 128 / 256 / 512 / 1024"))
+        XCTAssertTrue(html.contains("retrieval.query"))
+        XCTAssertTrue(html.contains("input_video"))
+        XCTAssertTrue(html.contains("text · image · audio · video"))
+        XCTAssertFalse(html.contains("BidirLM-Omni-2.5B"))
+    }
     func testValuesAreEscaped() {
         XCTAssertEqual(DocsPage.escape("&<>\""), "&amp;&lt;&gt;&quot;")
     }

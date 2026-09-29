@@ -11,17 +11,38 @@ enum DocsPage {
         let maxConnections: Int; let ioTimeoutSeconds: Int; let shutdownGraceSeconds: Int; let accessLogMode: String
         let spaceID: String?
         var isDummy = false
+        /// Selects the page: `docs.html` (BidirLM) or `docs-jina.html`.
+        var family: ModelFamily = .bidirlm
+        /// Matryoshka output sizes (Jina); `dimensions` is then the default size.
+        var matryoshka: [Int] = []
     }
 
-    private static let template: String? = {
-        guard let url = Bundle.module.url(forResource: "docs", withExtension: "html") else { return nil }
-        return try? String(contentsOf: url, encoding: .utf8)
+    static func resourceName(_ family: ModelFamily) -> String {
+        switch family {
+        case .bidirlm: "docs"
+        case .jinaOmniSmall: "docs-jina"
+        }
+    }
+
+    private static let templates: [ModelFamily: String] = {
+        var loaded = [ModelFamily: String]()
+        for family in ModelFamily.allCases {
+            if let url = Bundle.module.url(forResource: resourceName(family), withExtension: "html"),
+               let text = try? String(contentsOf: url, encoding: .utf8) {
+                loaded[family] = text
+            }
+        }
+        return loaded
     }()
 
-    static var templateAvailable: Bool { template != nil }
+    static func template(for family: ModelFamily) -> String? { templates[family] }
+
+    static var templateAvailable: Bool { templates[.bidirlm] != nil }
 
     static func validationError(_ context: Context) -> String? {
-        guard let template else { return "docs.html is missing from the executable resource bundle" }
+        guard let template = template(for: context.family) else {
+            return "\(resourceName(context.family)).html is missing from the executable resource bundle"
+        }
         let known = Set(tokens(context).map(\.token))
         let unknown = placeholderNames(in: template).subtracting(known)
         return unknown.isEmpty ? nil : "docs.html contains unknown placeholders: \(unknown.sorted().joined(separator: ", "))"
@@ -56,6 +77,7 @@ enum DocsPage {
             ("KEEP_WARM_LABEL", c.keepWarmSeconds > 0 ? "every \(c.keepWarmSeconds)s" : "disabled"), ("MAX_CONNECTIONS", String(c.maxConnections)),
             ("IO_TIMEOUT_SECONDS", String(c.ioTimeoutSeconds)), ("SHUTDOWN_GRACE_SECONDS", String(c.shutdownGraceSeconds)), ("ACCESS_LOG_MODE", c.accessLogMode),
             ("SPACE_ID", c.spaceID ?? "n/a"), ("VERSION", version), ("CSP_NONCE", scriptNonce),
+            ("MATRYOSHKA", c.matryoshka.sorted().map(String.init).joined(separator: " / ")),
             ("SERVING_MODE", c.isDummy ? "Core ML golden fixture" : "Production local microservice"),
             ("FIXTURE_NOTICE", c.isDummy
                 ? "This process serves a deterministic Core ML test fixture. Its embeddings are not suitable for retrieval."
@@ -64,7 +86,7 @@ enum DocsPage {
     }
 
     static func render(_ context: Context, scriptNonce: String = "docs-preview") -> String? {
-        guard validationError(context) == nil, var html = template else { return nil }
+        guard validationError(context) == nil, var html = template(for: context.family) else { return nil }
         for (token, value) in tokens(context, scriptNonce: scriptNonce) {
             html = html.replacingOccurrences(of: "{{\(token)}}", with: escape(value))
         }

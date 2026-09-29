@@ -1,7 +1,8 @@
-# GlossematicsServer — OpenAI-compatible /v1/embeddings localhost daemon for BidirLM-Omni.
+# GlossematicsServer — OpenAI-compatible /v1/embeddings localhost daemon for BidirLM-Omni and
+# jina-embeddings-v5-omni-small bundles (the family is detected from the bundle manifest).
 #
-# The fixture is a real compiled Core ML bundle with the production contract and no-op
-# functions. Production bundles come from GlossematicsCoreML/bidirlm (build_ane_text_bundle.sh).
+# The fixture is a real compiled Core ML bundle with the BidirLM contract and no-op functions.
+# Production bundles come from GlossematicsCoreML (bidirlm/ releases, artifacts/JinaV5OmniSmall.*).
 
 # ----- configuration ---------------------------------------------------------
 
@@ -30,9 +31,15 @@ IO_TIMEOUT_SECONDS ?= 30
 SHUTDOWN_GRACE_SECONDS ?= 15
 ACCESS_LOG ?= errors
 MAX_TOKENS ?= 32768
+DIMENSIONS ?=
+JINA_REFERENCE ?= ../GlossematicsCoreML/reference
+ORACLE ?=
+
+# bidirlm | jina | unknown, from the bundle manifest
+FAMILY := $(shell python3 -c 'import json,sys; m=json.load(open(sys.argv[1]+"/manifest.json")); print("bidirlm" if str(m.get("format","")).startswith("bidirlm-omni") else "jina" if m.get("formatVersion")==2 else "unknown")' "$(BUNDLE)" 2>/dev/null || echo unknown)
 
 # client probes against a running server
-MODEL       ?= BidirLM/BidirLM-Omni-2.5B-Embedding
+MODEL       ?= $(if $(filter jina,$(FAMILY)),jinaai/jina-embeddings-v5-omni-small,BidirLM/BidirLM-Omni-2.5B-Embedding)
 TEXT        ?= What is the capital of France?
 BASE_URL    ?= http://127.0.0.1:$(PORT)
 
@@ -46,17 +53,21 @@ SERVER_BIN := $(shell swift build --show-bin-path 2>/dev/null)/gloss-server
 RELEASE_BIN := $(shell swift build -c release --show-bin-path 2>/dev/null)/gloss-server
 FIXTURE_TABLE := $(FIXTURE)/token_embeddings.f16
 
-SERVER_ARGS = --bundle "$(BUNDLE)" --port "$(PORT)" --compute "$(COMPUTE)" \
+# Placement flags are BidirLM-only; Jina bundles take an optional default Matryoshka size.
+FAMILY_ARGS = $(if $(filter jina,$(FAMILY)),,--compute "$(COMPUTE)" --ane-program-budget "$(ANE_PROGRAM_BUDGET)") \
+	$(if $(DIMENSIONS),--dimensions "$(DIMENSIONS)",)
+
+SERVER_ARGS = --bundle "$(BUNDLE)" --port "$(PORT)" $(FAMILY_ARGS) \
 	--max-batch "$(MAX_BATCH)" --max-body-mb "$(MAX_BODY_MB)" \
 	--max-total-body-mb "$(MAX_TOTAL_BODY_MB)" \
 	--max-queue-requests "$(MAX_QUEUE_REQUESTS)" --max-queue-items "$(MAX_QUEUE_ITEMS)" \
-	--max-request-tokens "$(MAX_REQUEST_TOKENS)" --ane-program-budget "$(ANE_PROGRAM_BUDGET)" \
+	--max-request-tokens "$(MAX_REQUEST_TOKENS)" \
 	--batch-window-ms "$(BATCH_WINDOW_MS)" --keep-warm-seconds "$(KEEP_WARM_SECONDS)" \
 	--max-connections "$(MAX_CONNECTIONS)" --idle-timeout-seconds "$(IO_TIMEOUT_SECONDS)" \
 	--shutdown-grace-seconds "$(SHUTDOWN_GRACE_SECONDS)" --access-log "$(ACCESS_LOG)"
 
 .DEFAULT_GOAL := help
-.PHONY: help build release fixture test test-release verify-model dummy-bundle run install uninstall \
+.PHONY: help build release fixture test test-release verify-model verify-jina dummy-bundle run install uninstall \
         restart status logs health live metrics models embed bench check-config export clean
 
 # ----- targets ---------------------------------------------------------------
@@ -95,6 +106,14 @@ verify-model: release ## full-model gates on a sealed bundle: FP32 parity + HTTP
 dummy-bundle: ## regenerate the no-op fixture (needs TOKENIZER=<bundle>/tokenizer and coremltools)
 	@test -n "$(TOKENIZER)" || { echo "error: set TOKENIZER to a BidirLM bundle's tokenizer directory"; exit 1; }
 	$(CONVERTER_PYTHON) Scripts/make_dummy_bundle.py --tokenizer "$(TOKENIZER)" --output "$(FIXTURE)" --force
+
+verify-jina: release ## Jina gates on BUNDLE: video goldens + HTTP parity (ORACLE=<old daemon URL> optional)
+	$(RELEASE_BIN) --bundle "$(BUNDLE)" --check-config
+	GLOSS_JINA_BUNDLE="$(abspath $(BUNDLE))" GLOSS_JINA_REFERENCE="$(abspath $(JINA_REFERENCE))" \
+		swift test --filter JinaFullModel
+	cd Scripts && $(CONVERTER_PYTHON) smoke_jina.py --server-bin "$(RELEASE_BIN)" --bundle "$(abspath $(BUNDLE))" \
+		--output "$(abspath dist/jina-smoke)" --video-reference ../reference/jina/video_reference.json \
+		$(if $(ORACLE),--oracle "$(ORACLE)",)
 
 run: build ## run gloss-server in the foreground (ALLOW_DUMMY=1 for the fixture; COMPUTE=ane|gpu|cpu)
 	@test -d "$(BUNDLE)" || { echo "error: bundle not found: $(BUNDLE)"; exit 1; }

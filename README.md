@@ -1,17 +1,30 @@
 # GlossematicsServer
 
-`gloss-server` is a localhost-only embeddings daemon for
-[`BidirLM/BidirLM-Omni-2.5B-Embedding`](https://huggingface.co/BidirLM/BidirLM-Omni-2.5B-Embedding)
-(revision `447a6e31`). It serves an OpenAI-compatible `/v1/embeddings` endpoint for text, plus
-explicit image, audio, and interleaved-message extensions. Every input produces one 2048-d,
-L2-normalized vector in a single shared space. The model has no query or document prefixes and
-no Matryoshka truncation. The daemon binds IPv4 loopback only and never sends requests, model
-data, or media anywhere.
+`gloss-server` is a localhost-only embeddings daemon with an OpenAI-compatible `/v1/embeddings`
+endpoint plus explicit media extensions. It binds IPv4 loopback only and never sends requests,
+model data, or media anywhere. One process serves one Core ML bundle, and the model family is
+detected from the bundle's `manifest.json`:
 
-The model runs from a sealed `bidirlm-omni-ane-v2` Core ML bundle produced by
-`GlossematicsCoreML/bidirlm`. The bundle is W8A16 (int8 per-channel weights, float16
-activations); the server refuses bundles with any other precision. The operator picks one compute mode, and the server never falls
-back between modes:
+| Family | Bundle | Output | Inputs | Retrieval roles |
+| --- | --- | --- | --- | --- |
+| [`BidirLM/BidirLM-Omni-2.5B-Embedding`](https://huggingface.co/BidirLM/BidirLM-Omni-2.5B-Embedding) @ `447a6e31` | `format` `bidirlm-omni-ane-v2` or `bidirlm-omni-streamed-v2` (GlossematicsCoreML/bidirlm) | 2048-d | text, token IDs, image, audio, interleaved messages | none (rejected) |
+| [`jinaai/jina-embeddings-v5-omni-small`](https://huggingface.co/jinaai/jina-embeddings-v5-omni-small) @ `41a20a1e` | `formatVersion` 2 (GlossematicsCoreML `artifacts/JinaV5OmniSmall.w8a16.bundle`) | Matryoshka 32-1024-d (default 1024, `--dimensions`) | text, token IDs, image, audio, video | `query` / `document` (default) |
+
+Other bundles (including jina-embeddings-v5-omni-nano) are refused at startup. The Jina
+checkpoint is licensed CC BY-NC 4.0 (non-commercial); BidirLM is Apache-2.0. See
+[jina-embeddings-v5-omni-small](#jina-embeddings-v5-omni-small) for that family; the rest of this
+page up to it describes BidirLM.
+
+## BidirLM Omni
+
+Every BidirLM input produces one 2048-d, L2-normalized vector in a single shared space. The model
+has no query or document prefixes (`task`, `role`, and `input_type` are rejected) and no
+Matryoshka truncation.
+
+The model runs from a sealed `bidirlm-omni-ane-v2` or `bidirlm-omni-streamed-v2` Core ML bundle
+produced by `GlossematicsCoreML/bidirlm`. The bundle is W8A16 (int8 per-channel weights, float16
+activations); the server refuses bundles with any other precision. The operator picks one compute
+mode, and the server never falls back between modes:
 
 | `--compute` | Core ML units | Notes |
 | --- | --- | --- |
@@ -109,6 +122,46 @@ program-creation failure becomes an error instead of a quiet CPU fallback. Start
 on-demand set once, so later loads come from Core ML's cache in milliseconds. `/health` reports
 `programs_resident` and `program_sets_resident`.
 
+## jina-embeddings-v5-omni-small
+
+The Jina runtime lives in `Sources/gloss-server/Jina/` (restored from the pre-BidirLM daemon,
+branch `archive/jina-omnismall-wip`, with no dependency on the Glossematics SDK). It validates the
+pinned contract, compiled function shapes, and every declared checksum before the listener opens.
+
+- **Dimensions:** 32, 64, 128, 256, 512, or 1024 per request (`dimensions`); `--dimensions` sets
+  the default. Each size has its own space ID (`X-Glossematics-Space`, `/health` `spaces`),
+  identical to the SDK-based daemon's, so vectors indexed by it stay valid.
+- **Retrieval roles:** texts get the model's `Query: ` or `Document: ` prompt and media the
+  matching wrapper. Set `"task": "retrieval.query"` (or `retrieval.passage`), `"role"`, or
+  `"input_type"` (`query`, `document`, `passage`); the default is document. Token-ID inputs are
+  embedded as given.
+- **Text:** up to 32,768 tokens including the prompt, never truncated. Short rows from concurrent
+  requests are collected for `--batch-window-ms` into the native batch functions.
+- **Images:** PNG, JPEG, WebP up to 20 MiB, resized to 0.26-1.3 megapixels.
+- **Audio:** WAV up to 20 MiB and 30 seconds.
+- **Video:** MP4 up to 32 MiB and 60 seconds (`input_video` with a `data:video/mp4;base64,`
+  URL). Frames are decoded in order with AVAssetReader and converted from Y'CbCr with the stream's
+  tagged matrix (BT.601 when untagged), sampled like the source processor (2 fps, 4-32 frames,
+  rounded linspace over the decoded frames), sized with its `smart_resize` within the tower's
+  2048-patch budget, and resampled with antialiased bicubic. `/health` reports the recipe
+  (`video_recipe`).
+- Interleaved `message` inputs are not supported by this model (`unsupported_modality`).
+- Placement is per function (short text and short media sequences on the Neural Engine, the rest
+  on the GPU); `--compute` and `--ane-program-budget` apply to BidirLM only.
+
+Verified on `JinaV5OmniSmall.w8a16.bundle` (`make verify-jina`, `Scripts/smoke_jina.py`):
+
+| Check | Result |
+| --- | --- |
+| Text vs the SDK-based daemon, both roles, 1024/256/32 dims | cosine >= 0.999998, identical spaces |
+| Images (5) and audio (0.5 s, 3 s) vs the SDK-based daemon, both roles | cosine >= 0.99997; 45 s audio rejected by both |
+| Video golden frames (4x256, 4x384) vs the FP32 source | 0.9972 / 0.9976 (the W8A16 tower floor) |
+| MP4 files (3 clips, 4:3, 16:9 at 24 fps, portrait with an odd sample count) vs the FP32 source | 0.9964 / 0.9952 / 0.9961 |
+| Mixed text + media request order | exact |
+
+Startup takes about 6 s; images embed in about 0.3 s, audio in under 0.1 s, and video in
+0.4-1.6 s once warm.
+
 ## Build and run
 
 The only external Swift package is `swift-transformers`, used for offline tokenization.
@@ -117,6 +170,7 @@ The only external Swift package is `swift-transformers`, used for offline tokeni
 cd GlossematicsServer
 make check-config BUNDLE=/path/to/BidirLMOmni.w8a16.bundle
 make run BUNDLE=/path/to/BidirLMOmni.w8a16.bundle COMPUTE=ane
+make run BUNDLE=/path/to/JinaV5OmniSmall.w8a16.bundle DIMENSIONS=1024
 ```
 
 The first start compiles every function for the Neural Engine, which can take several
@@ -150,6 +204,16 @@ source model:
 
 Set `MAX_TOKENS=8192` to skip the slowest long cases on CPU.
 
+```bash
+make verify-jina BUNDLE=/path/to/JinaV5OmniSmall.w8a16.bundle [ORACLE=http://127.0.0.1:18800]
+```
+
+`verify-jina` runs the video golden-frame and MP4 checks (`GLOSS_JINA_BUNDLE`,
+`GLOSS_JINA_REFERENCE` = GlossematicsCoreML `reference/`) and the HTTP smoke; with `ORACLE` set to
+an SDK-based daemon it also checks text, image, and audio parity against it. The MP4 references
+(`reference/jina/video_reference.json`) come from
+`GlossematicsCoreML/python/parity/export_video_http_refs.py`.
+
 ## Operations
 
 The server enforces per-request and aggregate body limits, connection limits, request
@@ -160,6 +224,7 @@ starts.
 ```bash
 make health && make metrics
 BUNDLE=/path/to/BidirLMOmni.w8a16.bundle COMPUTE=ane make install   # launchd agent
+BUNDLE=/path/to/JinaV5OmniSmall.w8a16.bundle DIMENSIONS=1024 make install
 make status && make logs
 ```
 
@@ -171,9 +236,13 @@ models. Stop it, or lower `--ane-program-budget`, which costs more on-demand rel
 - `Sources/gloss-server/BidirLM/`: bundle validation, manifest contract, text and media
   encoders, program residency, placement audit, tokenizer, and multimodal sequence assembly
   (MRoPE, DeepStack).
+- `Sources/gloss-server/Jina/`: the jina-embeddings-v5-omni-small runtime (bundle validation,
+  text batching, image, audio, and video pipelines) and its HTTP service.
+- `Sources/gloss-server/ModelFamily.swift`: manifest-based family detection.
 - `Sources/gloss-server/Media/`: image decode and resample, WAV decode, and Whisper log-mel.
 - `Sources/gloss-server/`: HTTP transport, scheduler (packing and stepped long/media work),
   service, API schema, and docs.
 - `Fixtures/`: the no-op golden fixture (`make fixture` writes its 622 MB zero token table).
-- `reference/`: FP32 text and media goldens and the retrieval corpus.
+- `reference/`: FP32 text and media goldens and the retrieval corpus (BidirLM), and MP4 video
+  references (Jina).
 - `Scripts/`: launchd agent, fixture generator, HTTP smoke, and benchmarks.

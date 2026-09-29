@@ -216,6 +216,11 @@ struct EmbeddingsService: Sendable {
                 "dimensions must be \(BidirLMContract.dimension) for this model (it has no Matryoshka truncation)",
                 param: "dimensions"))
         }
+        if let field = body.retrievalRoleField {
+            return .error(400, .invalidRequest(
+                "\(field) is not supported by this model: BidirLM encodes queries and documents identically (it has no retrieval prompts); omit it",
+                param: field))
+        }
         guard await state.isReady() else {
             return .error(503, .serviceUnavailable("model is not ready"), extraHeaders: [("Retry-After", "5")])
         }

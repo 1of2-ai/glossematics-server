@@ -74,8 +74,11 @@ def embed(base: str, inputs, timeout: float = 900, **extra):
 
 
 def start(args, port: int, log_path: Path) -> subprocess.Popen:
-    cmd = [args.server_bin, "--bundle", str(args.bundle), "--port", str(port), "--compute", args.compute,
+    cmd = [args.server_bin, "--bundle", str(args.bundle), "--port", str(port),
            "--access-log", "all", "--keep-warm-seconds", "0", "--batch-window-ms", "3"]
+    if getattr(args, "compute", None):      # BidirLM only; Jina bundles place functions themselves
+        cmd += ["--compute", args.compute]
+    cmd += list(getattr(args, "extra_args", []) or [])
     if args.fixture:
         cmd.append("--allow-dummy")
     log = log_path.open("w")
@@ -139,6 +142,8 @@ def contract_checks(base: str, args, health: dict) -> None:
 
     status, body, _ = embed(base, "x", dimensions=1024)
     expect(status == 400 and body["error"]["param"] == "dimensions", "Matryoshka dimensions are rejected")
+    status, body, _ = embed(base, "x", task="retrieval.query")
+    expect(status == 400 and body["error"]["param"] == "task", "retrieval roles are rejected (BidirLM has no prompts)")
     status, body, _ = embed(base, "   ")
     expect(status == 400, "blank text is rejected")
     status, body, _ = embed(base, [[151936]])

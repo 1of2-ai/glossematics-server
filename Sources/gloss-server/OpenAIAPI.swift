@@ -55,10 +55,15 @@ struct EmbeddingsRequestBody: Decodable, Sendable {
     var dimensions: Int?
     var encodingFormat: String?
     var user: String?
+    /// Retrieval conditioning, from `task` (the pre-BidirLM daemon's field), `role`, or
+    /// `input_type`. Only models with query/document prompts accept it; the service decides.
+    var retrievalRole: RetrievalRole?
+    /// The request field that set `retrievalRole`, for error messages.
+    var retrievalRoleField: String?
 
     init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: DynamicKey.self)
-        let allowed = Set(["input", "model", "dimensions", "encoding_format", "user"])
+        let allowed = Set(["input", "model", "dimensions", "encoding_format", "user", "task", "role", "input_type"])
         for key in c.allKeys where !allowed.contains(key.stringValue) {
             throw DecodingError.dataCorruptedError(
                 forKey: key,
@@ -80,7 +85,35 @@ struct EmbeddingsRequestBody: Decodable, Sendable {
             String.self,
             forKey: DynamicKey(stringValue: "encoding_format")!)
         user = try c.decodeIfPresent(String.self, forKey: DynamicKey(stringValue: "user")!)
+        for field in ["task", "role", "input_type"] {
+            let key = DynamicKey(stringValue: field)!
+            guard let raw = try c.decodeIfPresent(String.self, forKey: key) else { continue }
+            guard let role = RetrievalRole(requestValue: raw) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: key, in: c,
+                    debugDescription: "\(field) must be retrieval.query or retrieval.passage (aliases: query, document, passage)")
+            }
+            if let existing = retrievalRole, existing != role {
+                throw DecodingError.dataCorruptedError(
+                    forKey: key, in: c,
+                    debugDescription: "\(field) conflicts with \(retrievalRoleField ?? "another retrieval field")")
+            }
+            retrievalRole = role
+            retrievalRoleField = retrievalRoleField ?? field
+        }
         items = try c.decode(InputValue.self, forKey: inputKey).items
+    }
+}
+
+extension RetrievalRole {
+    /// Accepted spellings, case-insensitive: the Jina task names, OpenAI-style roles, and the
+    /// `search_query` / `search_document` convention.
+    init?(requestValue raw: String) {
+        switch raw.trimmingCharacters(in: .whitespaces).lowercased() {
+        case "retrieval.query", "query", "search_query": self = .query
+        case "retrieval.passage", "retrieval.document", "passage", "document", "search_document": self = .document
+        default: return nil
+        }
     }
 }
 

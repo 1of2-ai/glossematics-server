@@ -26,12 +26,17 @@ struct Arguments: Sendable {
     var accessLog: AccessLogMode = .errors
     var checkConfig = false
     var allowDummy = false
+    /// Default output size (Jina Matryoshka); BidirLM accepts only its native 2048.
+    var dimensions: Int?
+    /// Flags given on the command line, for family-specific validation after detection.
+    var explicit: Set<String> = []
 
     static func parse(_ args: [String]) throws -> Arguments {
         var parsed = Arguments()
         var index = 1
         while index < args.count {
             let flag = args[index]
+            parsed.explicit.insert(flag)
             func nextValue() throws -> String {
                 index += 1
                 guard index < args.count else { throw ArgumentError("missing value for \(flag)") }
@@ -51,6 +56,11 @@ struct Arguments: Sendable {
                     throw ArgumentError("--compute must be ane|gpu|cpu")
                 }
                 parsed.compute = mode
+            case "--dimensions", "-d":
+                guard let value = Int(try nextValue()), value > 0 else {
+                    throw ArgumentError("--dimensions expects a positive integer")
+                }
+                parsed.dimensions = value
             case "--model-name", "-m":
                 let value = try nextValue()
                 guard !value.isEmpty, value.count <= 256,
@@ -105,13 +115,16 @@ struct Arguments: Sendable {
     }
 
     static let helpText = """
-    gloss-server — local OpenAI-compatible BidirLM embeddings microservice
+    gloss-server — local OpenAI-compatible embeddings microservice
     usage: gloss-server --bundle <dir> [options]
-      --compute ane|gpu|cpu (ane)  operator-selected Core ML placement; never falls back
+    The model family is detected from the bundle manifest: BidirLM Omni or
+    jina-embeddings-v5-omni-small.
+      --compute ane|gpu|cpu (ane)  BidirLM: operator-selected Core ML placement; never falls back
+      --dimensions N  Jina: default Matryoshka size (1024; 32|64|128|256|512|1024). BidirLM: 2048 only
       --port N (11435)  --model-name ID
       --max-batch N (2048)  --max-queue-requests N (128)  --max-queue-items N (8192)
       --max-request-tokens N (131072)  --batch-window-ms N (2.0)  --keep-warm-seconds N (60)
-      --ane-program-budget N (64; Neural Engine programs this process keeps loaded, 40...120)
+      --ane-program-budget N (64; BidirLM: Neural Engine programs kept loaded, 40...120)
       --max-body-mb N (64)  --max-total-body-mb N (256)  --max-connections N (256)
       --idle-timeout-seconds N (30; bounds stalled reads/writes)
       --shutdown-grace-seconds N (15)  --access-log off|errors|all
@@ -241,9 +254,46 @@ final class FatalRelay: @unchecked Sendable {
     func fire(_ message: String) { lock.withLock { coordinator }?.request(reason: message, exitCode: 1) }
 }
 
-do {
-    let arguments = try Arguments.parse(CommandLine.arguments)
-    guard let bundleURL = arguments.bundle else { throw ArgumentError("--bundle is required") }
+/// One model family's service behind the shared HTTP shell: its router, readiness work, and
+/// keep-warm loop. Built after the family is detected from the bundle manifest.
+struct ServingApp: Sendable {
+    let modelID: String
+    let isDummy: Bool
+    let banner: String
+    let state: RuntimeState
+    let metrics: ServerMetrics
+    let route: @Sendable (HTTPRequest) async -> HTTPResponse
+    /// Loads and warms the model; returns the log line for readiness.
+    let startup: @Sendable () async throws -> String
+    let startKeepWarm: @Sendable () -> Task<Void, Never>?
+}
+
+final class BlockingResultBox<T>: @unchecked Sendable {
+    let lock = NSLock()
+    var result: Result<T, any Error>?
+}
+
+/// Run async bundle validation before the socket opens (top-level code is synchronous).
+func blockingAsync<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) throws -> T {
+    let semaphore = DispatchSemaphore(value: 0)
+    let box = BlockingResultBox<T>()
+    Task.detached {
+        let result: Result<T, any Error>
+        do { result = .success(try await operation()) } catch { result = .failure(error) }
+        box.lock.withLock { box.result = result }
+        semaphore.signal()
+    }
+    semaphore.wait()
+    guard let result = box.lock.withLock({ box.result }) else {
+        throw ArgumentError("async validation returned no result")
+    }
+    return try result.get()
+}
+
+func makeBidirLMApp(arguments: Arguments, bundleURL: URL) throws -> ServingApp {
+    if let dimensions = arguments.dimensions, dimensions != BidirLMContract.dimension {
+        throw ArgumentError("--dimensions must be \(BidirLMContract.dimension) for BidirLM bundles (no Matryoshka truncation)")
+    }
     // Integrity and contract validation happen before the tokenizer, Core ML, or the socket.
     let bundle = try BidirLMBundle.load(from: bundleURL, allowFixture: arguments.allowDummy)
     let isDummy = bundle.manifest.isFixture
@@ -265,6 +315,7 @@ do {
 
     if arguments.checkConfig {
         print("ok: \(bundle.manifest.modelID)\(isDummy ? " (Core ML dummy fixture)" : "")")
+        print("family: \(ModelFamily.bidirlm.rawValue)")
         print("space: \(bundle.manifest.spaceID)")
         print("compute: \(arguments.compute.rawValue) (\(arguments.compute.coreMLName))")
         print("artifacts: \(bundle.artifactFingerprint)")
@@ -295,18 +346,188 @@ do {
     let service = EmbeddingsService(
         config: config, backend: backend, scheduler: scheduler, media: media, state: state,
         admission: admission, lane: lane, metrics: metrics, docsContext: docsContext, startedAt: startedAt)
+    return ServingApp(
+        modelID: bundle.manifest.modelID,
+        isDummy: isDummy,
+        banner: "gloss-server \(BuildInfo.version) model=\(bundle.manifest.modelID) family=\(ModelFamily.bidirlm.rawValue)\(isDummy ? " fixture=dummy-coreml" : "") compute=\(arguments.compute.rawValue) batch-window=\(arguments.batchWindowMS)ms",
+        state: state,
+        metrics: metrics,
+        route: { await service.route($0) },
+        startup: {
+            try await performStartup(backend: backend, lane: lane, metrics: metrics)
+            let placement = await backend.placement
+            let share = placement?.costShare.sorted { $0.key < $1.key }
+                .map { "\($0.key)=\(String(format: "%.3f", $0.value))" }.joined(separator: ",") ?? "n/a"
+            let seconds = await backend.loadSeconds ?? 0
+            return "ready: compute=\(arguments.compute.rawValue) load=\(String(format: "%.1f", seconds))s placement=\(share)"
+        },
+        startKeepWarm: {
+            startKeepWarmLoop(intervalSeconds: config.keepWarmSeconds, backend: backend, lane: lane,
+                              scheduler: scheduler, state: state, metrics: metrics)
+        })
+}
 
-    timestamped("gloss-server \(BuildInfo.version) model=\(bundle.manifest.modelID)\(isDummy ? " fixture=dummy-coreml" : "") compute=\(arguments.compute.rawValue) batch-window=\(arguments.batchWindowMS)ms")
+func makeJinaApp(arguments: Arguments, bundleURL: URL) throws -> ServingApp {
+    for flag in ["--compute", "-c", "--ane-program-budget"] where arguments.explicit.contains(flag) {
+        throw ArgumentError("\(flag) applies to BidirLM bundles; the Jina runtime places each function itself")
+    }
+    let bundle = try GlossModelBundle(url: bundleURL)
+    // A golden fixture uses the same validated Core ML path as production; serving its constant
+    // vectors needs an explicit opt-in.
+    let isDummy = bundle.manifest.converter?.name == "dummy-noop"
+    guard !isDummy || arguments.allowDummy else {
+        throw ArgumentError("Core ML dummy fixture requires --allow-dummy")
+    }
+    guard !isDummy || arguments.modelName == nil else {
+        throw ArgumentError("--model-name is not allowed with a dummy fixture")
+    }
+    let supported = bundle.capabilities.matryoshkaDimensions.sorted()
+    let requested = arguments.dimensions ?? OmniSmall.Dimensions.d1024.rawValue
+    guard let defaultDimensions = OmniSmall.Dimensions(rawValue: requested), supported.contains(requested) else {
+        throw ArgumentError("--dimensions must be one of \(supported) for this bundle")
+    }
+    // Validate the pinned contract, compiled function shapes, and every declared checksum
+    // before loading the tokenizer or opening a socket.
+    let model = try blockingAsync { try await OmniSmall.load(from: bundleURL, dimensions: .d1024) }
+    let modalities = JinaEmbeddingsService.modalities(bundle)
+    let docsContext = DocsPage.Context(
+        baseURL: "http://127.0.0.1:\(arguments.port)",
+        modelID: arguments.modelName ?? bundle.manifest.modelID,
+        dimensions: defaultDimensions.rawValue,
+        maxTokens: JinaLimits.maximumTokensPerInput,
+        compute: JinaLimits.computeDescription,
+        modalities: modalities,
+        maxBatch: arguments.maxBatch,
+        maxRequestTokens: arguments.maxRequestTokens,
+        maxBodyMB: arguments.maxBodyMB,
+        maxTotalBodyMB: arguments.maxTotalBodyMB,
+        maxQueueRequests: arguments.maxQueueRequests,
+        maxQueueItems: arguments.maxQueueItems,
+        batchWindowMS: arguments.batchWindowMS,
+        keepWarmSeconds: arguments.keepWarmSeconds,
+        maxConnections: arguments.maxConnections,
+        ioTimeoutSeconds: arguments.ioTimeoutSeconds,
+        shutdownGraceSeconds: arguments.shutdownGraceSeconds,
+        accessLogMode: arguments.accessLog.rawValue,
+        spaceID: model.space(for: defaultDimensions),
+        isDummy: isDummy,
+        family: .jinaOmniSmall,
+        matryoshka: supported)
+    if let error = DocsPage.validationError(docsContext) {
+        throw ArgumentError("integrated docs validation failed: \(error)")
+    }
+
+    if arguments.checkConfig {
+        print("ok: \(bundle.manifest.modelID)\(isDummy ? " (Core ML dummy fixture)" : "")")
+        print("family: \(ModelFamily.jinaOmniSmall.rawValue)")
+        print("space[\(defaultDimensions.rawValue)]: \(model.space(for: defaultDimensions))")
+        print("dimensions: \(supported.map(String.init).joined(separator: ",")) (default \(defaultDimensions.rawValue))")
+        print("modalities: \(modalities.joined(separator: ","))")
+        exit(0)
+    }
+
+    let config = JinaServiceConfig(
+        port: arguments.port,
+        defaultDimensions: defaultDimensions,
+        modelName: arguments.modelName,
+        maxBatch: arguments.maxBatch,
+        maxBodyBytes: arguments.maxBodyMB * 1_048_576,
+        maxTotalBodyBytes: arguments.maxTotalBodyMB * 1_048_576,
+        maxQueueRequests: arguments.maxQueueRequests,
+        maxQueueItems: arguments.maxQueueItems,
+        maxRequestTokens: arguments.maxRequestTokens,
+        batchWindowMilliseconds: arguments.batchWindowMS,
+        keepWarmSeconds: arguments.keepWarmSeconds,
+        maxConnections: arguments.maxConnections,
+        ioTimeoutSeconds: arguments.ioTimeoutSeconds,
+        shutdownGraceSeconds: arguments.shutdownGraceSeconds)
+    let state = RuntimeState()
+    let metrics = ServerMetrics()
+    let lane = AcceleratorLane()
+    let admission = AdmissionGate(maxRequests: config.maxQueueRequests, maxItems: config.maxQueueItems)
+    let tokenizers = try JinaTokenizerPool(bundle: bundle)
+    let store = JinaModelStore(model: model)
+    let batcher = JinaTextBatcher(store: store, lane: lane, metrics: metrics,
+                                  windowMilliseconds: config.batchWindowMilliseconds)
+    let service = JinaEmbeddingsService(
+        config: config, bundle: bundle, store: store, tokenizers: tokenizers, state: state,
+        admission: admission, batcher: batcher, lane: lane, metrics: metrics, docsContext: docsContext,
+        startedAt: Int(Date().timeIntervalSince1970), isFixture: isDummy)
+
+    @Sendable func warm() async throws {
+        try await lane.acquire()
+        do {
+            _ = try await model.embedDocument(.text("warm"), dimensions: .d1024)
+            await lane.release()
+            await metrics.recordInference()
+        } catch {
+            await lane.release()
+            throw error
+        }
+    }
+    return ServingApp(
+        modelID: bundle.manifest.modelID,
+        isDummy: isDummy,
+        banner: "gloss-server \(BuildInfo.version) model=\(bundle.manifest.modelID) family=\(ModelFamily.jinaOmniSmall.rawValue)\(isDummy ? " fixture=dummy-coreml" : "") dimensions=\(defaultDimensions.rawValue) batch-window=\(arguments.batchWindowMS)ms",
+        state: state,
+        metrics: metrics,
+        route: { await service.route($0) },
+        startup: {
+            let started = ContinuousClock.now
+            try await warm()
+            let seconds = elapsedMilliseconds(ContinuousClock.now - started) / 1000
+            return "ready: validated bundle, text inference warmed in \(String(format: "%.1f", seconds))s; modalities=\(modalities.joined(separator: ","))"
+        },
+        startKeepWarm: {
+            guard config.keepWarmSeconds > 0 else { return nil }
+            return Task.detached(priority: .background) {
+                let nanos = UInt64(config.keepWarmSeconds) * 1_000_000_000
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: nanos)
+                    guard !Task.isCancelled, await state.isReady() else { continue }
+                    let before = await batcher.snapshot()
+                    guard before.rows == 0, !before.executing, await lane.tryAcquire() else { continue }
+                    await lane.release()
+                    do {
+                        try await warm()
+                        await state.recordKeepWarmSuccess()
+                        await metrics.recordKeepWarm(success: true)
+                    } catch {
+                        await state.recordKeepWarmFailure(String(describing: error))
+                        await metrics.recordKeepWarm(success: false)
+                        timestamped("keep-warm failed: \(error)", error: true)
+                    }
+                }
+            }
+        })
+}
+
+do {
+    let arguments = try Arguments.parse(CommandLine.arguments)
+    guard let bundleURL = arguments.bundle else { throw ArgumentError("--bundle is required") }
+    guard FileManager.default.fileExists(atPath: bundleURL.path) else {
+        throw ArgumentError("bundle not found: \(bundleURL.path)")
+    }
+    let app: ServingApp
+    switch try ModelFamily.detect(bundle: bundleURL) {
+    case .bidirlm: app = try makeBidirLMApp(arguments: arguments, bundleURL: bundleURL)
+    case .jinaOmniSmall: app = try makeJinaApp(arguments: arguments, bundleURL: bundleURL)
+    }
+    let state = app.state
+    let metrics = app.metrics
+    let isDummy = app.isDummy
+
+    timestamped(app.banner)
     let relay = FatalRelay()
     let server = try HTTPServer(
-        port: config.port,
-        maxBodyBytes: config.maxBodyBytes,
-        maxTotalBodyBytes: config.maxTotalBodyBytes,
-        maxConnections: config.maxConnections,
-        ioTimeoutSeconds: config.ioTimeoutSeconds,
+        port: arguments.port,
+        maxBodyBytes: arguments.maxBodyMB * 1_048_576,
+        maxTotalBodyBytes: arguments.maxTotalBodyMB * 1_048_576,
+        maxConnections: arguments.maxConnections,
+        ioTimeoutSeconds: arguments.ioTimeoutSeconds,
         handler: { request in
             let started = ContinuousClock.now
-            var response = await service.route(request)
+            var response = await app.route(request)
             if isDummy { response.extraHeaders.append(("X-Glossematics-Dummy", "true")) }
             await metrics.recordHTTP()
             let ms = elapsedMilliseconds(ContinuousClock.now - started)
@@ -319,7 +540,7 @@ do {
             return response
         },
         onFatal: { relay.fire($0) })
-    let shutdown = ShutdownCoordinator(server: server, state: state, grace: config.shutdownGraceSeconds)
+    let shutdown = ShutdownCoordinator(server: server, state: state, grace: arguments.shutdownGraceSeconds)
     relay.install(shutdown)
 
     signal(SIGTERM, SIG_IGN)
@@ -332,25 +553,19 @@ do {
     }
 
     try server.start()
-    timestamped("listening http://127.0.0.1:\(config.port) docs=/docs ready=/ready")
+    timestamped("listening http://127.0.0.1:\(arguments.port) docs=/docs ready=/ready")
 
     Task.detached(priority: .userInitiated) {
         do {
-            try await performStartup(backend: backend, lane: lane, metrics: metrics)
+            let message = try await app.startup()
             await state.markReady()
-            let placement = await backend.placement
-            let share = placement?.costShare.sorted { $0.key < $1.key }
-                .map { "\($0.key)=\(String(format: "%.3f", $0.value))" }.joined(separator: ",") ?? "n/a"
-            let seconds = await backend.loadSeconds ?? 0
-            timestamped("ready: compute=\(arguments.compute.rawValue) load=\(String(format: "%.1f", seconds))s placement=\(share)")
+            timestamped(message)
         } catch {
             await state.failStartup(String(describing: error))
             timestamped("startup FAILED: \(error)", error: true)
         }
     }
-    let keepWarm = startKeepWarmLoop(
-        intervalSeconds: config.keepWarmSeconds, backend: backend, lane: lane,
-        scheduler: scheduler, state: state, metrics: metrics)
+    let keepWarm = app.startKeepWarm()
     _ = keepWarm
 
     // A release build may otherwise destroy the local dispatch sources before the run loop

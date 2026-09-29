@@ -100,8 +100,39 @@ final class OpenAIAPITests: XCTestCase {
         }
     }
 
+    func testRetrievalRoleFieldsDecode() throws {
+        func role(_ json: String) throws -> (RetrievalRole?, String?) {
+            let body = try JSONDecoder().decode(EmbeddingsRequestBody.self, from: Data(json.utf8))
+            return (body.retrievalRole, body.retrievalRoleField)
+        }
+        XCTAssertEqual(try role(#"{"model":"m","input":"x"}"#).0, nil)
+        XCTAssertEqual(try role(#"{"model":"m","input":"x","task":"retrieval.query"}"#).0, .query)
+        XCTAssertEqual(try role(#"{"model":"m","input":"x","task":"Retrieval.Passage"}"#).0, .document)
+        XCTAssertEqual(try role(#"{"model":"m","input":"x","role":"document"}"#).0, .document)
+        XCTAssertEqual(try role(#"{"model":"m","input":"x","input_type":"query"}"#).1, "input_type")
+        XCTAssertEqual(try role(#"{"model":"m","input":"x","task":"query","role":"query"}"#).0, .query)
+        for json in [
+            #"{"model":"m","input":"x","task":"text-matching"}"#,
+            #"{"model":"m","input":"x","task":"query","role":"document"}"#,
+            #"{"model":"m","input":"x","input_type":7}"#,
+        ] {
+            XCTAssertThrowsError(try JSONDecoder().decode(EmbeddingsRequestBody.self, from: Data(json.utf8)), json)
+        }
+    }
+
+    func testModelFamilyIsDetectedFromTheManifest() throws {
+        XCTAssertEqual(try ModelFamily.detect(manifest: ["format": "bidirlm-omni-ane-v2"]), .bidirlm)
+        XCTAssertEqual(try ModelFamily.detect(manifest: ["format": "bidirlm-omni-streamed-v2"]), .bidirlm)
+        XCTAssertEqual(try ModelFamily.detect(manifest: [
+            "formatVersion": 2, "modelID": "jinaai/jina-embeddings-v5-omni-small"]), .jinaOmniSmall)
+        XCTAssertThrowsError(try ModelFamily.detect(manifest: [
+            "formatVersion": 2, "modelID": "jinaai/jina-embeddings-v5-omni-nano"]))
+        XCTAssertThrowsError(try ModelFamily.detect(manifest: ["formatVersion": 1, "modelID": "x"]))
+        XCTAssertThrowsError(try ModelFamily.detect(manifest: [:]))
+    }
+
     func testNonstandardOrUnsafeInputIsRejected() {
-        let nonstandard = Data(#"{"model":"m","input":"x","task":"retrieval.query"}"#.utf8)
+        let nonstandard = Data(#"{"model":"m","input":"x","instruction":"Represent this"}"#.utf8)
         XCTAssertThrowsError(try JSONDecoder().decode(EmbeddingsRequestBody.self, from: nonstandard))
 
         let path = Data(#"{"model":"m","input":{"image_path":"/tmp/frame.png"}}"#.utf8)

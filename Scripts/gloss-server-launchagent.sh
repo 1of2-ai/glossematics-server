@@ -47,12 +47,16 @@ ACCESS_LOG="errors"
 MODEL_NAME=""
 BUNDLE=""
 ALLOW_DUMMY_FLAG="0"
+DIMENSIONS=""
+COMPUTE_SET="0"
+BUDGET_SET="0"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --bundle)                 BUNDLE="${2:?missing --bundle value}"; shift 2 ;;
         --port)                   PORT="${2:?missing --port value}"; shift 2 ;;
-        --compute)                COMPUTE="${2:?missing --compute value}"; shift 2 ;;
+        --compute)                COMPUTE="${2:?missing --compute value}"; COMPUTE_SET="1"; shift 2 ;;
+        --dimensions)             DIMENSIONS="${2:?missing --dimensions value}"; shift 2 ;;
         --model-name)             MODEL_NAME="${2:?missing --model-name value}"; shift 2 ;;
         --label)                  LABEL="${2:?missing --label value}"; shift 2 ;;
         --max-batch)              MAX_BATCH="${2:?missing --max-batch value}"; shift 2 ;;
@@ -61,7 +65,7 @@ while [[ $# -gt 0 ]]; do
         --max-queue-requests)     MAX_QUEUE_REQUESTS="${2:?missing --max-queue-requests value}"; shift 2 ;;
         --max-queue-items)        MAX_QUEUE_ITEMS="${2:?missing --max-queue-items value}"; shift 2 ;;
         --max-request-tokens)     MAX_REQUEST_TOKENS="${2:?missing --max-request-tokens value}"; shift 2 ;;
-        --ane-program-budget)     ANE_PROGRAM_BUDGET="${2:?missing --ane-program-budget value}"; shift 2 ;;
+        --ane-program-budget)     ANE_PROGRAM_BUDGET="${2:?missing --ane-program-budget value}"; BUDGET_SET="1"; shift 2 ;;
         --batch-window-ms)        BATCH_WINDOW_MS="${2:?missing --batch-window-ms value}"; shift 2 ;;
         --keep-warm-seconds)      KEEP_WARM_SECONDS="${2:?missing --keep-warm-seconds value}"; shift 2 ;;
         --max-connections)        MAX_CONNECTIONS="${2:?missing --max-connections value}"; shift 2 ;;
@@ -173,14 +177,12 @@ server_args() {
     SERVER_ARGS=(
         --bundle "$BUNDLE"
         --port "$PORT"
-        --compute "$COMPUTE"
         --max-batch "$MAX_BATCH"
         --max-body-mb "$MAX_BODY_MB"
         --max-total-body-mb "$MAX_TOTAL_BODY_MB"
         --max-queue-requests "$MAX_QUEUE_REQUESTS"
         --max-queue-items "$MAX_QUEUE_ITEMS"
         --max-request-tokens "$MAX_REQUEST_TOKENS"
-        --ane-program-budget "$ANE_PROGRAM_BUDGET"
         --batch-window-ms "$BATCH_WINDOW_MS"
         --keep-warm-seconds "$KEEP_WARM_SECONDS"
         --max-connections "$MAX_CONNECTIONS"
@@ -188,8 +190,35 @@ server_args() {
         --shutdown-grace-seconds "$SHUTDOWN_GRACE_SECONDS"
         --access-log "$ACCESS_LOG"
     )
+    # Placement flags belong to BidirLM bundles; Jina bundles take a default Matryoshka size.
+    case "$(bundle_family "$BUNDLE")" in
+        bidirlm) SERVER_ARGS+=(--compute "$COMPUTE" --ane-program-budget "$ANE_PROGRAM_BUDGET") ;;
+        jina)
+            if [[ "$COMPUTE_SET" == "1" || "$BUDGET_SET" == "1" ]]; then
+                echo "error: --compute and --ane-program-budget apply to BidirLM bundles only" >&2
+                exit 2
+            fi
+            ;;
+        *) echo "error: unsupported bundle (not BidirLM Omni or jina-embeddings-v5-omni-small)" >&2; exit 2 ;;
+    esac
+    [[ -n "$DIMENSIONS" ]] && SERVER_ARGS+=(--dimensions "$DIMENSIONS")
     [[ -n "$MODEL_NAME" ]] && SERVER_ARGS+=(--model-name "$MODEL_NAME")
     [[ "$ALLOW_DUMMY_FLAG" == "1" ]] && SERVER_ARGS+=(--allow-dummy)
+}
+
+bundle_family() {
+    python3 - "$1/manifest.json" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    manifest = json.load(stream)
+if str(manifest.get("format", "")).startswith("bidirlm-omni"):
+    print("bidirlm")
+elif manifest.get("formatVersion") == 2 and manifest.get("modelID") == "jinaai/jina-embeddings-v5-omni-small":
+    print("jina")
+else:
+    print("unknown")
+PY
 }
 
 bundle_kind() {
@@ -198,7 +227,7 @@ import json
 import sys
 with open(sys.argv[1], encoding="utf-8") as stream:
     manifest = json.load(stream)
-if manifest.get("fixture") == "dummy-noop":
+if manifest.get("fixture") == "dummy-noop" or (manifest.get("converter") or {}).get("name") == "dummy-noop":
     print("dummy")
 else:
     print("real")
