@@ -1,0 +1,910 @@
+[
+  {
+    "metadataOutputVersion" : "3.0",
+    "outputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 64)",
+        "shortDescription" : "",
+        "shape" : "[1, 2048, 1, 64]",
+        "name" : "hidden_out",
+        "type" : "MultiArray"
+      }
+    ],
+    "modelParameters" : [
+
+    ],
+    "specificationVersion" : 9,
+    "functions" : [
+      {
+        "computePrecision" : "Float16",
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 64)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1, 64]",
+            "name" : "hidden_out",
+            "type" : "MultiArray"
+          }
+        ],
+        "stateSchema" : [
+
+        ],
+        "name" : "stack_c64",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios18.mul" : 4,
+          "Ios16.reduceSum" : 4,
+          "Ios18.add" : 4
+        },
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 64)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1, 64]",
+            "name" : "hidden",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 64)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 128, 64]",
+            "name" : "cos",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 64)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 128, 64]",
+            "name" : "sin",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 64 × 128)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 64, 128]",
+            "name" : "bias",
+            "type" : "MultiArray"
+          }
+        ]
+      },
+      {
+        "computePrecision" : "Float16",
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1, 512]",
+            "name" : "hidden_out",
+            "type" : "MultiArray"
+          }
+        ],
+        "stateSchema" : [
+
+        ],
+        "name" : "stack_c512",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios18.mul" : 4,
+          "Ios16.reduceSum" : 4,
+          "Ios18.add" : 4
+        },
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1, 512]",
+            "name" : "hidden",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 128, 512]",
+            "name" : "cos",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 128, 512]",
+            "name" : "sin",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 512 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 512, 1024]",
+            "name" : "bias",
+            "type" : "MultiArray"
+          }
+        ]
+      },
+      {
+        "computePrecision" : "Mixed (Float16, Int32)",
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1, 512]",
+            "name" : "hidden_out",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 1024]",
+            "name" : "query",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 512]",
+            "name" : "key",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 512]",
+            "name" : "value",
+            "type" : "MultiArray"
+          }
+        ],
+        "stateSchema" : [
+
+        ],
+        "name" : "mid_c512_l7",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 4,
+          "Ios18.add" : 7,
+          "Ios18.reshape" : 2,
+          "Ios18.mul" : 5,
+          "Ios18.sliceByIndex" : 1
+        },
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 1024]",
+            "name" : "attention",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1, 512]",
+            "name" : "hidden",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 128, 512]",
+            "name" : "cos",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 128, 512]",
+            "name" : "sin",
+            "type" : "MultiArray"
+          }
+        ]
+      },
+      {
+        "computePrecision" : "Mixed (Float16, Int32)",
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1, 512]",
+            "name" : "hidden_out",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 1024]",
+            "name" : "query",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 512]",
+            "name" : "key",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 512]",
+            "name" : "value",
+            "type" : "MultiArray"
+          }
+        ],
+        "stateSchema" : [
+
+        ],
+        "name" : "mid_c512_l8",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 4,
+          "Ios18.add" : 7,
+          "Ios18.reshape" : 2,
+          "Ios18.mul" : 5,
+          "Ios18.sliceByIndex" : 1
+        },
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 1024]",
+            "name" : "attention",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1, 512]",
+            "name" : "hidden",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 128, 512]",
+            "name" : "cos",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 128, 512]",
+            "name" : "sin",
+            "type" : "MultiArray"
+          }
+        ]
+      },
+      {
+        "computePrecision" : "Mixed (Float16, Int32)",
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1, 512]",
+            "name" : "hidden_out",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 1024]",
+            "name" : "query",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 512]",
+            "name" : "key",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 512]",
+            "name" : "value",
+            "type" : "MultiArray"
+          }
+        ],
+        "stateSchema" : [
+
+        ],
+        "name" : "mid_c512_l9",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 4,
+          "Ios18.add" : 7,
+          "Ios18.reshape" : 2,
+          "Ios18.mul" : 5,
+          "Ios18.sliceByIndex" : 1
+        },
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 1024]",
+            "name" : "attention",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1, 512]",
+            "name" : "hidden",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 128, 512]",
+            "name" : "cos",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 128, 512]",
+            "name" : "sin",
+            "type" : "MultiArray"
+          }
+        ]
+      },
+      {
+        "computePrecision" : "Mixed (Float16, Int32)",
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1, 512]",
+            "name" : "hidden_out",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 1024]",
+            "name" : "query",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 512]",
+            "name" : "key",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 512]",
+            "name" : "value",
+            "type" : "MultiArray"
+          }
+        ],
+        "stateSchema" : [
+
+        ],
+        "name" : "mid_c512_l10",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 4,
+          "Ios18.add" : 7,
+          "Ios18.reshape" : 2,
+          "Ios18.mul" : 5,
+          "Ios18.sliceByIndex" : 1
+        },
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 1024]",
+            "name" : "attention",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1, 512]",
+            "name" : "hidden",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 128, 512]",
+            "name" : "cos",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 128, 512]",
+            "name" : "sin",
+            "type" : "MultiArray"
+          }
+        ]
+      },
+      {
+        "computePrecision" : "Mixed (Float16, Int32)",
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1, 512]",
+            "name" : "hidden_out",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 1024]",
+            "name" : "query",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 512]",
+            "name" : "key",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 512]",
+            "name" : "value",
+            "type" : "MultiArray"
+          }
+        ],
+        "stateSchema" : [
+
+        ],
+        "name" : "mid_c512_l11",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 4,
+          "Ios18.add" : 7,
+          "Ios18.reshape" : 2,
+          "Ios18.mul" : 5,
+          "Ios18.sliceByIndex" : 1
+        },
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 1024]",
+            "name" : "attention",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1, 512]",
+            "name" : "hidden",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 128, 512]",
+            "name" : "cos",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 128, 512]",
+            "name" : "sin",
+            "type" : "MultiArray"
+          }
+        ]
+      },
+      {
+        "computePrecision" : "Mixed (Float16, Int32)",
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1, 512]",
+            "name" : "hidden_out",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 1024]",
+            "name" : "query",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 512]",
+            "name" : "key",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 512]",
+            "name" : "value",
+            "type" : "MultiArray"
+          }
+        ],
+        "stateSchema" : [
+
+        ],
+        "name" : "mid_c512_l12",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 4,
+          "Ios18.add" : 7,
+          "Ios18.reshape" : 2,
+          "Ios18.mul" : 5,
+          "Ios18.sliceByIndex" : 1
+        },
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 1024]",
+            "name" : "attention",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1, 512]",
+            "name" : "hidden",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 128, 512]",
+            "name" : "cos",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 128, 512]",
+            "name" : "sin",
+            "type" : "MultiArray"
+          }
+        ]
+      },
+      {
+        "computePrecision" : "Mixed (Float16, Int32)",
+        "outputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1, 512]",
+            "name" : "hidden_out",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 1024]",
+            "name" : "query",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 512]",
+            "name" : "key",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 512]",
+            "name" : "value",
+            "type" : "MultiArray"
+          }
+        ],
+        "stateSchema" : [
+
+        ],
+        "name" : "mid_c512_l13",
+        "mlProgramOperationTypeHistogram" : {
+          "Ios16.reduceSum" : 4,
+          "Ios18.add" : 7,
+          "Ios18.reshape" : 2,
+          "Ios18.mul" : 5,
+          "Ios18.sliceByIndex" : 1
+        },
+        "inputSchema" : [
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 8 × 128 × 1024)",
+            "shortDescription" : "",
+            "shape" : "[1, 8, 128, 1024]",
+            "name" : "attention",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 2048, 1, 512]",
+            "name" : "hidden",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 128, 512]",
+            "name" : "cos",
+            "type" : "MultiArray"
+          },
+          {
+            "hasShapeFlexibility" : "0",
+            "isOptional" : "0",
+            "dataType" : "Float16",
+            "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 512)",
+            "shortDescription" : "",
+            "shape" : "[1, 1, 128, 512]",
+            "name" : "sin",
+            "type" : "MultiArray"
+          }
+        ]
+      }
+    ],
+    "mlProgramOperationTypeHistogram" : {
+      "Ios18.mul" : 4,
+      "Ios16.reduceSum" : 4,
+      "Ios18.add" : 4
+    },
+    "isUpdatable" : "0",
+    "stateSchema" : [
+
+    ],
+    "availability" : {
+      "macOS" : "15.0",
+      "tvOS" : "18.0",
+      "visionOS" : "2.0",
+      "watchOS" : "11.0",
+      "iOS" : "18.0",
+      "macCatalyst" : "18.0"
+    },
+    "computePrecision" : "Float16",
+    "modelType" : {
+      "name" : "MLModelType_mlProgram"
+    },
+    "inputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 2048 × 1 × 64)",
+        "shortDescription" : "",
+        "shape" : "[1, 2048, 1, 64]",
+        "name" : "hidden",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 64)",
+        "shortDescription" : "",
+        "shape" : "[1, 1, 128, 64]",
+        "name" : "cos",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 1 × 128 × 64)",
+        "shortDescription" : "",
+        "shape" : "[1, 1, 128, 64]",
+        "name" : "sin",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 1 × 64 × 128)",
+        "shortDescription" : "",
+        "shape" : "[1, 1, 64, 128]",
+        "name" : "bias",
+        "type" : "MultiArray"
+      }
+    ],
+    "defaultFunctionName" : "stack_c64",
+    "generatedClassName" : "group_1",
+    "userDefinedMetadata" : {
+
+    },
+    "method" : "predict"
+  }
+]

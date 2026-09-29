@@ -1,10 +1,33 @@
 import Foundation
 import Network
 
-// Minimal HTTP/1.1 server over Network.framework, bound to the loopback interface only.
-// It exists to serve one endpoint family on localhost, so it intentionally implements just
-// what that requires: request-line + header parsing, Content-Length bodies (with
-// Expect: 100-continue), keep-alive, and JSON responses. No TLS, no chunked request bodies.
+private final class HTTPDateClock: @unchecked Sendable {
+    static let shared = HTTPDateClock()
+    private let lock = NSLock()
+    private let formatter: DateFormatter
+    private var cachedSecond: Int64 = -1
+    private var cachedValue = ""
+
+    private init() {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        self.formatter = formatter
+    }
+
+    func now() -> String {
+        lock.withLock {
+            let date = Date()
+            let second = Int64(date.timeIntervalSince1970)
+            if second != cachedSecond {
+                cachedSecond = second
+                cachedValue = formatter.string(from: date)
+            }
+            return cachedValue
+        }
+    }
+}
 
 struct HTTPRequest: Sendable {
     var method: String
@@ -13,12 +36,12 @@ struct HTTPRequest: Sendable {
     var version: String
     var headers: [String: String]
     var body: Data
+    var requestID: String
 
-    /// HTTP/1.1 defaults to keep-alive; HTTP/1.0 defaults to close. Header overrides both.
     var wantsKeepAlive: Bool {
-        let connection = headers["connection"]?.lowercased()
-        if version == "HTTP/1.0" { return connection?.contains("keep-alive") == true }
-        return connection?.contains("close") != true
+        let value = headers["connection"]?.lowercased()
+        if version == "HTTP/1.0" { return value?.contains("keep-alive") == true }
+        return value?.contains("close") != true
     }
 }
 
@@ -27,32 +50,53 @@ struct HTTPResponse: Sendable {
     var contentType: String
     var extraHeaders: [(String, String)]
     var body: Data
+    var onComplete: (@Sendable () async -> Void)?
 
-    init(status: Int, contentType: String = "application/json", extraHeaders: [(String, String)] = [], body: Data) {
+    init(
+        status: Int,
+        contentType: String = "application/json",
+        extraHeaders: [(String, String)] = [],
+        body: Data,
+        onComplete: (@Sendable () async -> Void)? = nil
+    ) {
         self.status = status
         self.contentType = contentType
         self.extraHeaders = extraHeaders
         self.body = body
+        self.onComplete = onComplete
     }
 
-    static func json<T: Encodable>(_ status: Int, _ payload: T, extraHeaders: [(String, String)] = []) -> HTTPResponse {
+    static func json<T: Encodable>(
+        _ status: Int,
+        _ payload: T,
+        extraHeaders: [(String, String)] = []
+    ) -> HTTPResponse {
         let encoder = JSONEncoder()
-        let data = (try? encoder.encode(payload)) ?? Data("{}".utf8)
-        return HTTPResponse(status: status, extraHeaders: extraHeaders, body: data)
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        do {
+            return HTTPResponse(
+                status: status,
+                extraHeaders: extraHeaders,
+                body: try encoder.encode(payload))
+        } catch {
+            return HTTPResponse(
+                status: 500,
+                body: Data(#"{"error":{"message":"failed to encode server response","type":"api_error","param":null,"code":null}}"#.utf8))
+        }
     }
 
-    static func rawJSON(_ status: Int, _ utf8: String, extraHeaders: [(String, String)] = []) -> HTTPResponse {
-        HTTPResponse(status: status, extraHeaders: extraHeaders, body: Data(utf8.utf8))
-    }
-
-    static func error(_ status: Int, _ apiError: APIError, extraHeaders: [(String, String)] = []) -> HTTPResponse {
-        json(status, apiError, extraHeaders: extraHeaders)
+    static func error(
+        _ status: Int,
+        _ error: APIError,
+        extraHeaders: [(String, String)] = []
+    ) -> HTTPResponse {
+        json(status, error, extraHeaders: extraHeaders)
     }
 
     static let reasonPhrases: [Int: String] = [
-        100: "Continue", 200: "OK", 400: "Bad Request", 404: "Not Found",
-        405: "Method Not Allowed", 408: "Request Timeout", 413: "Content Too Large",
-        415: "Unsupported Media Type", 422: "Unprocessable Content",
+        100: "Continue", 200: "OK", 302: "Found", 400: "Bad Request",
+        404: "Not Found", 405: "Method Not Allowed", 408: "Request Timeout",
+        413: "Content Too Large", 415: "Unsupported Media Type", 417: "Expectation Failed",
         431: "Request Header Fields Too Large", 500: "Internal Server Error",
         503: "Service Unavailable",
     ]
@@ -64,256 +108,438 @@ struct HTTPResponse: Sendable {
 
 enum HTTPError: Error, CustomStringConvertible {
     case connectionClosed
+    case requestTimeout
     case headerTooLarge
+    case tooManyHeaders
     case bodyTooLarge(limit: Int)
+    case aggregateBodyBudgetExhausted(limit: Int)
+    case expectationFailed(String)
     case malformedRequest(String)
 
     var description: String {
         switch self {
-        case .connectionClosed: return "connection closed"
-        case .headerTooLarge: return "request headers exceed the size limit"
-        case let .bodyTooLarge(limit): return "request body exceeds the \(limit)-byte limit"
-        case let .malformedRequest(reason): return reason
+        case .connectionClosed: "connection closed"
+        case .requestTimeout: "request I/O timed out"
+        case .headerTooLarge: "request headers exceed the size limit"
+        case .tooManyHeaders: "request contains too many headers"
+        case let .bodyTooLarge(limit): "request body exceeds the \(limit)-byte limit"
+        case let .aggregateBodyBudgetExhausted(limit):
+            "server request-body budget is full (\(limit) bytes); retry shortly"
+        case let .expectationFailed(reason): reason
+        case let .malformedRequest(reason): reason
         }
     }
 }
 
-/// One accepted client connection. All buffer state is owned by the single pump task;
-/// `nw` and `handler` are immutable after init, so unchecked Sendable is sound here.
+enum HTTPServerError: Error, CustomStringConvertible {
+    case startTimedOut
+    case listenerFailed(String)
+
+    var description: String {
+        switch self {
+        case .startTimedOut: "HTTP listener did not become ready before timeout"
+        case let .listenerFailed(reason): "HTTP listener failed: \(reason)"
+        }
+    }
+}
+
+actor BodyBudget {
+    nonisolated let limit: Int
+    private var reserved = 0
+
+    init(limit: Int) { self.limit = limit }
+
+    func tryReserve(_ bytes: Int) -> Bool {
+        guard bytes >= 0, reserved + bytes <= limit else { return false }
+        reserved += bytes
+        return true
+    }
+
+    func release(_ bytes: Int) {
+        reserved = max(0, reserved - max(0, bytes))
+    }
+}
+
+private struct ReceivedRequest {
+    var request: HTTPRequest
+    var bodyReservation: Int
+}
+
 final class HTTPConnection: @unchecked Sendable {
     private let nw: NWConnection
     private let handler: @Sendable (HTTPRequest) async -> HTTPResponse
     private let maxBodyBytes: Int
+    private let bodyBudget: BodyBudget
+    private let ioTimeoutNanoseconds: UInt64
+    private let onClose: @Sendable (ObjectIdentifier) -> Void
+    private let stateLock = NSLock()
+    private var pumpTask: Task<Void, Never>?
+    private var finished = false
+    private var draining = false
+    private var handlingRequest = false
     private var pending = [UInt8]()
+    private let maxKeepAliveRequests = 100
 
-    init(nw: NWConnection, handler: @escaping @Sendable (HTTPRequest) async -> HTTPResponse, maxBodyBytes: Int) {
+    init(
+        nw: NWConnection,
+        handler: @escaping @Sendable (HTTPRequest) async -> HTTPResponse,
+        maxBodyBytes: Int,
+        bodyBudget: BodyBudget,
+        ioTimeoutSeconds: Int,
+        onClose: @escaping @Sendable (ObjectIdentifier) -> Void
+    ) {
         self.nw = nw
         self.handler = handler
         self.maxBodyBytes = maxBodyBytes
+        self.bodyBudget = bodyBudget
+        self.ioTimeoutNanoseconds = UInt64(max(1, ioTimeoutSeconds)) * 1_000_000_000
+        self.onClose = onClose
     }
 
     func start(queue: DispatchQueue) {
         nw.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
-            case .ready:
-                self.pump()
-            case .failed, .cancelled:
-                self.nw.stateUpdateHandler = nil
-            default:
-                break
+            case .ready: self.startPumpOnce()
+            case .failed, .cancelled: self.finish()
+            default: break
             }
         }
         nw.start(queue: queue)
     }
 
+    func beginDrain() {
+        let idleTask: Task<Void, Never>? = stateLock.withLock {
+            draining = true
+            return handlingRequest ? nil : pumpTask
+        }
+        idleTask?.cancel()
+    }
+
     func cancel() {
+        stateLock.withLock { pumpTask }?.cancel()
         nw.cancel()
     }
 
-    private func pump() {
-        Task { [self] in
-            do {
-                while true {
-                    let request = try await readRequest()
-                    let keepAlive = request.wantsKeepAlive
-                    let response = await handler(request)
-                    try await write(response, keepAlive: keepAlive)
-                    if !keepAlive {
-                        try await writeFinal()
-                        break
-                    }
-                }
-            } catch is CancellationError {
-                // Client went away mid-request.
-            } catch {
-                // Best-effort error response; the connection is likely unusable afterwards.
-                if let httpError = error as? HTTPError {
-                    let status: Int
-                    switch httpError {
-                    case .bodyTooLarge: status = 413
-                    case .headerTooLarge: status = 431
-                    case .malformedRequest: status = 400
-                    case .connectionClosed: status = 408
-                    }
-                    let body = try? JSONEncoder().encode(
-                        APIError.invalidRequest(httpError.description))
-                    let head = "HTTP/1.1 \(status) \(HTTPResponse.reason(status))\r\n"
-                        + "Content-Type: application/json\r\n"
-                        + "Content-Length: \(body?.count ?? 0)\r\n"
-                        + "Connection: close\r\n\r\n"
-                    var payload = Data(head.utf8)
-                    if let body { payload.append(body) }
-                    try? await send(payload)
-                }
-            }
+    private func startPumpOnce() {
+        stateLock.lock()
+        guard pumpTask == nil, !finished else {
+            stateLock.unlock()
+            return
+        }
+        let task = Task { [self] in await pump() }
+        pumpTask = task
+        stateLock.unlock()
+    }
+
+    private func finish() {
+        stateLock.lock()
+        guard !finished else {
+            stateLock.unlock()
+            return
+        }
+        finished = true
+        pumpTask?.cancel()
+        pumpTask = nil
+        stateLock.unlock()
+        nw.stateUpdateHandler = nil
+        onClose(ObjectIdentifier(self))
+    }
+
+    private func isDraining() -> Bool { stateLock.withLock { draining } }
+    private func setHandling(_ value: Bool) { stateLock.withLock { handlingRequest = value } }
+
+    private func pump() async {
+        var served = 0
+        defer {
             nw.cancel()
+            finish()
+        }
+
+        do {
+            while !Task.isCancelled {
+                if isDraining() { break }
+                let received = try await readRequest()
+                setHandling(true)
+                served += 1
+                var keepAlive = received.request.wantsKeepAlive && served < maxKeepAliveRequests
+                let response = await handler(received.request)
+                do {
+                    try Task.checkCancellation()
+                    if isDraining() { keepAlive = false }
+                    try await write(
+                        response,
+                        requestID: received.request.requestID,
+                        keepAlive: keepAlive)
+                    await response.onComplete?()
+                    await bodyBudget.release(received.bodyReservation)
+                    setHandling(false)
+                } catch {
+                    await response.onComplete?()
+                    await bodyBudget.release(received.bodyReservation)
+                    setHandling(false)
+                    throw error
+                }
+                if !keepAlive { break }
+            }
+        } catch is CancellationError {
+        } catch let error as HTTPError {
+            if case .connectionClosed = error { return }
+            var headers: [(String, String)] = []
+            let status: Int
+            switch error {
+            case .bodyTooLarge: status = 413
+            case .aggregateBodyBudgetExhausted:
+                status = 503
+                headers.append(("Retry-After", "1"))
+            case .headerTooLarge, .tooManyHeaders: status = 431
+            case .expectationFailed: status = 417
+            case .requestTimeout: status = 408
+            case .malformedRequest: status = 400
+            case .connectionClosed: return
+            }
+            try? await write(
+                .error(status, .invalidRequest(error.description), extraHeaders: headers),
+                requestID: UUID().uuidString.lowercased(),
+                keepAlive: false)
+        } catch {
+            try? await write(
+                .error(500, .apiError("transport failure")),
+                requestID: UUID().uuidString.lowercased(),
+                keepAlive: false)
         }
     }
 
-    // MARK: - Receive
-
     private func receiveChunk() async throws -> [UInt8] {
+        try await withThrowingTaskGroup(of: [UInt8].self) { group in
+            group.addTask { [self] in try await receiveRaw() }
+            let timeout = ioTimeoutNanoseconds
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeout)
+                try Task.checkCancellation()
+                throw HTTPError.requestTimeout
+            }
+            guard let first = try await group.next() else { throw HTTPError.connectionClosed }
+            group.cancelAll()
+            return first
+        }
+    }
+
+    private func receiveRaw() async throws -> [UInt8] {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                nw.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { data, _, isComplete, error in
+                nw.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, _, error in
                     if let data, !data.isEmpty {
                         continuation.resume(returning: [UInt8](data))
                     } else if let error {
                         continuation.resume(throwing: error)
                     } else {
-                        // EOF with no data (isComplete) or a spurious empty read: peer is gone.
                         continuation.resume(throwing: HTTPError.connectionClosed)
                     }
                 }
             }
         } onCancel: {
-            nw.cancel()
+            self.nw.cancel()
         }
     }
 
-    private func readRequest() async throws -> HTTPRequest {
-        // 1) Headers, terminated by CRLFCRLF.
-        let delimiter: [UInt8] = Array("\r\n\r\n".utf8)
+    private func readRequest() async throws -> ReceivedRequest {
+        let delimiter = Array("\r\n\r\n".utf8)
+        let maxHeaderBytes = 64 * 1024
         var searchFloor = 0
         var headerEnd = find(delimiter, in: pending, from: searchFloor)
         while headerEnd == nil {
-            guard pending.count < 64 * 1024 else { throw HTTPError.headerTooLarge }
             let chunk = try await receiveChunk()
             searchFloor = max(0, pending.count - delimiter.count + 1)
             pending.append(contentsOf: chunk)
             headerEnd = find(delimiter, in: pending, from: searchFloor)
+            if headerEnd == nil, pending.count > maxHeaderBytes + delimiter.count {
+                throw HTTPError.headerTooLarge
+            }
         }
-        let headBytes = Array(pending[0..<headerEnd!])
-        pending.removeFirst(headerEnd! + delimiter.count)
+        guard let headerEnd, headerEnd <= maxHeaderBytes else { throw HTTPError.headerTooLarge }
+        let headBytes = Array(pending[0..<headerEnd])
+        pending.removeFirst(headerEnd + delimiter.count)
+        guard let head = String(bytes: headBytes, encoding: .utf8) else {
+            throw HTTPError.malformedRequest("request headers are not valid UTF-8")
+        }
 
-        let head = String(decoding: headBytes, as: UTF8.self)
-        var lines = head.split(separator: "\r\n", omittingEmptySubsequences: false)[...]
-        guard let requestLine = lines.first else {
-            throw HTTPError.malformedRequest("empty request head")
-        }
-        lines = lines.dropFirst()
-        let parts = requestLine.split(separator: " ")
-        guard parts.count == 3, parts[0].count > 0, parts[2].hasPrefix("HTTP/") else {
+        var lines = head.components(separatedBy: "\r\n")
+        guard !lines.isEmpty else { throw HTTPError.malformedRequest("empty request head") }
+        let parts = lines.removeFirst().split(separator: " ", omittingEmptySubsequences: false)
+        guard parts.count == 3,
+              !parts[0].isEmpty,
+              !parts[1].isEmpty,
+              parts[2] == "HTTP/1.1" || parts[2] == "HTTP/1.0" else {
             throw HTTPError.malformedRequest("malformed request line")
         }
-        var headers = [String: String]()
-        headers.reserveCapacity(lines.count)
-        for line in lines {
-            guard let colon = line.firstIndex(of: ":") else { continue }
-            let name = String(line[line.startIndex..<colon]).trimmingCharacters(in: .whitespaces)
-            let value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
-            headers[name.lowercased()] = value
+        let method = String(parts[0])
+        guard isHTTPToken(method), method == method.uppercased() else {
+            throw HTTPError.malformedRequest("invalid HTTP method")
         }
-
         let target = String(parts[1])
-        let (path, query) = splitTarget(target)
-        let request = HTTPRequest(
-            method: String(parts[0]),
-            path: path,
-            query: query,
-            version: String(parts[2]),
-            headers: headers,
-            body: Data())
-
-        // 2) Interim 100 Continue so curl/requests don't stall waiting to send large bodies.
-        if headers["expect"]?.lowercased().contains("100-continue") == true {
-            try await send(Data("HTTP/1.1 100 Continue\r\n\r\n".utf8))
-        }
-
-        // 3) Body by Content-Length. Chunked request bodies are not supported by design.
-        var body = pending
-        pending = []
-        if let transferEncoding = headers["transfer-encoding"],
-           transferEncoding.lowercased().contains("chunked") {
+        guard target.hasPrefix("/"), !target.contains("#"), isSafeRequestTarget(target) else {
             throw HTTPError.malformedRequest(
-                "chunked request bodies are not supported; send Content-Length")
+                "request target must be visible-ASCII origin-form without a fragment")
         }
-        let contentLength = Int(headers["content-length"] ?? "0") ?? -1
-        guard contentLength >= 0 else {
-            throw HTTPError.malformedRequest("invalid Content-Length")
-        }
-        guard contentLength <= maxBodyBytes else {
-            throw HTTPError.bodyTooLarge(limit: maxBodyBytes)
-        }
-        while body.count < contentLength {
-            body.append(contentsOf: try await receiveChunk())
-        }
-        if body.count > contentLength {
-            // Keep any pipelined bytes for the next request.
-            pending = Array(body[contentLength...])
-            body = Array(body[0..<contentLength])
+        guard lines.count <= 100 else { throw HTTPError.tooManyHeaders }
+
+        var headers = [String: String]()
+        for line in lines where !line.isEmpty {
+            guard line.first != " ", line.first != "\t", let colon = line.firstIndex(of: ":") else {
+                throw HTTPError.malformedRequest("malformed HTTP header")
+            }
+            let rawName = String(line[..<colon])
+            guard isHTTPToken(rawName) else { throw HTTPError.malformedRequest("invalid HTTP header name") }
+            let name = rawName.lowercased()
+            let value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard isSafeHeaderValue(value) else {
+                throw HTTPError.malformedRequest("HTTP header values contain control characters")
+            }
+            if headers[name] != nil {
+                if name == "content-length" || name == "host" {
+                    throw HTTPError.malformedRequest("duplicate \(rawName) header")
+                }
+                headers[name]! += ", " + value
+            } else {
+                headers[name] = value
+            }
         }
 
-        var finalized = request
-        finalized.body = Data(body)
-        return finalized
+        let version = String(parts[2])
+        if version == "HTTP/1.1" {
+            guard let host = headers["host"], isLoopbackHost(host) else {
+                throw HTTPError.malformedRequest("Host must name localhost or loopback")
+            }
+        } else if let host = headers["host"], !isLoopbackHost(host) {
+            throw HTTPError.malformedRequest("Host must name localhost or loopback")
+        }
+        if headers["transfer-encoding"] != nil {
+            throw HTTPError.malformedRequest(
+                "Transfer-Encoding is not supported; send one Content-Length header")
+        }
+
+        let contentLength: Int
+        if let raw = headers["content-length"] {
+            let bytes = raw.utf8
+            guard !bytes.isEmpty,
+                  bytes.allSatisfy({ (48...57).contains($0) }),
+                  let parsed = Int(raw) else {
+                throw HTTPError.malformedRequest("invalid Content-Length")
+            }
+            contentLength = parsed
+        } else {
+            contentLength = 0
+        }
+        guard contentLength <= maxBodyBytes else { throw HTTPError.bodyTooLarge(limit: maxBodyBytes) }
+        guard await bodyBudget.tryReserve(contentLength) else {
+            throw HTTPError.aggregateBodyBudgetExhausted(limit: bodyBudget.limit)
+        }
+
+        do {
+            if let expect = headers["expect"] {
+                guard expect.lowercased() == "100-continue" else {
+                    throw HTTPError.expectationFailed("only Expect: 100-continue is supported")
+                }
+                try await send(Data("HTTP/1.1 100 Continue\r\n\r\n".utf8))
+            }
+            var body = pending
+            pending = []
+            while body.count < contentLength {
+                body.append(contentsOf: try await receiveChunk())
+            }
+            if body.count > contentLength {
+                pending = Array(body[contentLength...])
+                body = Array(body[..<contentLength])
+            }
+            let (path, query) = splitTarget(target)
+            let requestID = validRequestID(headers["x-request-id"])
+                ?? UUID().uuidString.lowercased()
+            return ReceivedRequest(
+                request: .init(
+                    method: method,
+                    path: path,
+                    query: query,
+                    version: version,
+                    headers: headers,
+                    body: Data(body),
+                    requestID: requestID),
+                bodyReservation: contentLength)
+        } catch {
+            await bodyBudget.release(contentLength)
+            throw error
+        }
     }
 
-    // MARK: - Send
-
-    private func write(_ response: HTTPResponse, keepAlive: Bool) async throws {
+    private func write(_ response: HTTPResponse, requestID: String, keepAlive: Bool) async throws {
         var head = "HTTP/1.1 \(response.status) \(HTTPResponse.reason(response.status))\r\n"
+        head += "Date: \(HTTPDateClock.shared.now())\r\n"
+        head += "Server: \(BuildInfo.serverHeader)\r\n"
         head += "Content-Type: \(response.contentType)\r\n"
         head += "Content-Length: \(response.body.count)\r\n"
         head += "Connection: \(keepAlive ? "keep-alive" : "close")\r\n"
-        for (name, value) in response.extraHeaders {
+        head += "X-Request-ID: \(requestID)\r\n"
+        head += "X-Content-Type-Options: nosniff\r\n"
+        if !response.extraHeaders.contains(where: {
+            $0.0.caseInsensitiveCompare("Cache-Control") == .orderedSame
+        }) {
+            head += "Cache-Control: no-store\r\n"
+        }
+        for (name, value) in response.extraHeaders where safeResponseHeader(name: name, value: value) {
             head += "\(name): \(value)\r\n"
         }
         head += "\r\n"
-        var payload = Data(head.utf8)
-        payload.append(response.body)
-        if keepAlive {
-            try await send(payload)
-        } else {
-            // Ask the stack to close only after every buffered byte has drained.
-            try await sendFinal(payload)
-        }
-    }
-
-    private func writeFinal() async throws {
-        nw.send(content: nil, contentContext: .finalMessage, completion: .contentProcessed { _ in })
+        var data = Data(head.utf8)
+        data.append(response.body)
+        try await sendWithTimeout(data, final: !keepAlive)
     }
 
     private func send(_ data: Data) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            nw.send(content: data, completion: .contentProcessed { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
+        try await sendWithTimeout(data, final: false)
+    }
+
+    private func sendWithTimeout(_ data: Data, final: Bool) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { [self] in try await sendRaw(data, final: final) }
+            let timeout = ioTimeoutNanoseconds
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeout)
+                try Task.checkCancellation()
+                throw HTTPError.requestTimeout
+            }
+            _ = try await group.next()
+            group.cancelAll()
+        }
+    }
+
+    private func sendRaw(_ data: Data, final: Bool) async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, any Error>) in
+                let done = NWConnection.SendCompletion.contentProcessed { error in
+                    if let error { continuation.resume(throwing: error) }
+                    else { continuation.resume() }
                 }
-            })
+                if final {
+                    nw.send(content: data, contentContext: .finalMessage, isComplete: true, completion: done)
+                } else {
+                    nw.send(content: data, completion: done)
+                }
+            }
+        } onCancel: {
+            self.nw.cancel()
         }
     }
-
-    private func sendFinal(_ data: Data) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            nw.send(
-                content: data, contentContext: .finalMessage, isComplete: true,
-                completion: .contentProcessed { error in
-                    if let error {
-                        continuation.resume(throwing: error)
-                    } else {
-                        continuation.resume()
-                    }
-                })
-        }
-    }
-
-    // MARK: - Parsing helpers
 
     private func find(_ needle: [UInt8], in haystack: [UInt8], from start: Int) -> Int? {
         guard !needle.isEmpty, haystack.count >= needle.count else { return nil }
         let upper = haystack.count - needle.count
         guard start <= upper else { return nil }
-        var index = start
+        var index = max(0, start)
         while index <= upper {
             if haystack[index] == needle[0] {
                 var matched = 1
-                while matched < needle.count, haystack[index + matched] == needle[matched] {
-                    matched += 1
-                }
+                while matched < needle.count, haystack[index + matched] == needle[matched] { matched += 1 }
                 if matched == needle.count { return index }
             }
             index += 1
@@ -322,63 +548,213 @@ final class HTTPConnection: @unchecked Sendable {
     }
 
     private func splitTarget(_ target: String) -> (String, String) {
-        guard let questionMark = target.firstIndex(of: "?") else {
-            return (target, "")
+        guard let q = target.firstIndex(of: "?") else { return (target, "") }
+        return (String(target[..<q]), String(target[target.index(after: q)...]))
+    }
+
+    private func isHTTPToken(_ text: String) -> Bool {
+        let allowed = CharacterSet(charactersIn:
+            "!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+        return !text.isEmpty && text.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
+    private func isSafeRequestTarget(_ text: String) -> Bool {
+        text.unicodeScalars.allSatisfy { (0x21...0x7e).contains($0.value) }
+    }
+
+    private func isSafeHeaderValue(_ text: String) -> Bool {
+        text.unicodeScalars.allSatisfy { $0.value == 9 || (0x20...0x7e).contains($0.value) }
+    }
+
+    private func isLoopbackHost(_ raw: String) -> Bool {
+        let host = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        for prefix in ["localhost", "127.0.0.1", "[::1]"] {
+            if host == prefix { return true }
+            if host.hasPrefix(prefix + ":") {
+                return Int(host.dropFirst(prefix.count + 1)).map { (1...65535).contains($0) } ?? false
+            }
         }
-        return (String(target[target.startIndex..<questionMark]),
-                String(target[target.index(after: questionMark)...]))
+        return false
+    }
+
+    private func validRequestID(_ value: String?) -> String? {
+        guard let value, (1...128).contains(value.count) else { return nil }
+        let allowed = CharacterSet(charactersIn:
+            "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_.:")
+        return value.unicodeScalars.allSatisfy { allowed.contains($0) } ? value : nil
+    }
+
+    private func safeResponseHeader(name: String, value: String) -> Bool {
+        let reserved = [
+            "date", "server", "content-type", "content-length", "connection",
+            "x-request-id", "x-content-type-options",
+        ]
+        return isHTTPToken(name)
+            && !reserved.contains(name.lowercased())
+            && isSafeHeaderValue(value)
     }
 }
 
-/// Listener bound to the loopback interface. Not a daemon-facing multiplexer: one accept loop,
-/// one task per connection.
 final class HTTPServer: @unchecked Sendable {
     let port: UInt16
     private let listener: NWListener
     private let handler: @Sendable (HTTPRequest) async -> HTTPResponse
-    private let queue: DispatchQueue
+    private let queue = DispatchQueue(label: "glossematics.http.server", qos: .userInitiated)
     private let maxBodyBytes: Int
+    private let budget: BodyBudget
+    private let maxConnections: Int
+    private let ioTimeoutSeconds: Int
+    private let onFatal: @Sendable (String) -> Void
     private let lock = NSLock()
     private var connections: [ObjectIdentifier: HTTPConnection] = [:]
     private var started = false
+    private var becameReady = false
+    private var fatalDelivered = false
 
-    init(port: UInt16, maxBodyBytes: Int, handler: @escaping @Sendable (HTTPRequest) async -> HTTPResponse) throws {
+    init(
+        port: UInt16,
+        maxBodyBytes: Int,
+        maxTotalBodyBytes: Int,
+        maxConnections: Int,
+        ioTimeoutSeconds: Int,
+        handler: @escaping @Sendable (HTTPRequest) async -> HTTPResponse,
+        onFatal: @escaping @Sendable (String) -> Void = { _ in }
+    ) throws {
         self.port = port
         self.handler = handler
         self.maxBodyBytes = maxBodyBytes
-        self.queue = DispatchQueue(label: "glossematics.http.server")
+        self.budget = BodyBudget(limit: maxTotalBodyBytes)
+        self.maxConnections = maxConnections
+        self.ioTimeoutSeconds = ioTimeoutSeconds
+        self.onFatal = onFatal
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
-        parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
-            host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!)
-        self.listener = try NWListener(using: parameters)
+        parameters.requiredLocalEndpoint = .hostPort(
+            host: .ipv4(.loopback),
+            port: NWEndpoint.Port(rawValue: port)!)
+        listener = try NWListener(using: parameters)
     }
 
-    func start() {
+    func start(timeoutSeconds: Double = 5) throws {
         lock.lock()
-        let alreadyStarted = started
+        guard !started else { lock.unlock(); return }
         started = true
         lock.unlock()
-        guard !alreadyStarted else { return }
-
-        listener.newConnectionHandler = { [weak self] nw in
-            guard let self else { return }
-            let connection = HTTPConnection(
-                nw: nw, handler: self.handler, maxBodyBytes: self.maxBodyBytes)
-            self.lock.lock()
-            self.connections[ObjectIdentifier(connection)] = connection
-            self.lock.unlock()
-            connection.start(queue: self.queue)
+        let semaphore = DispatchSemaphore(value: 0)
+        final class StartBox: @unchecked Sendable {
+            let lock = NSLock()
+            var result: Result<Void, any Error>?
         }
+        let box = StartBox()
+        listener.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .ready:
+                self.lock.lock()
+                let first = !self.becameReady
+                self.becameReady = true
+                self.lock.unlock()
+                if first {
+                    box.lock.withLock { if box.result == nil { box.result = .success(()) } }
+                    semaphore.signal()
+                }
+            case let .failed(error):
+                if self.lock.withLock({ self.becameReady }) {
+                    self.deliverFatal("listener failed after startup: \(error)")
+                } else {
+                    box.lock.withLock {
+                        if box.result == nil {
+                            box.result = .failure(HTTPServerError.listenerFailed(String(describing: error)))
+                        }
+                    }
+                    semaphore.signal()
+                }
+            default:
+                break
+            }
+        }
+        listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
         listener.start(queue: queue)
+        guard semaphore.wait(timeout: .now() + timeoutSeconds) == .success else {
+            listener.cancel()
+            throw HTTPServerError.startTimedOut
+        }
+        guard let result = box.lock.withLock({ box.result }) else { throw HTTPServerError.startTimedOut }
+        try result.get()
     }
 
-    func stop() {
+    func shutdown(graceSeconds: Int) async {
         listener.cancel()
+        lock.withLock { Array(connections.values) }.forEach { $0.beginDrain() }
+        let deadline = Date().addingTimeInterval(TimeInterval(max(0, graceSeconds)))
+        while Date() < deadline {
+            if lock.withLock({ connections.isEmpty }) { return }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let remaining = lock.withLock { () -> [HTTPConnection] in
+            let snapshot = Array(connections.values)
+            connections.removeAll()
+            return snapshot
+        }
+        remaining.forEach { $0.cancel() }
+    }
+
+    private func accept(_ nw: NWConnection) {
+        if lock.withLock({ connections.count >= maxConnections }) { reject(nw); return }
+        let connection = HTTPConnection(
+            nw: nw,
+            handler: handler,
+            maxBodyBytes: maxBodyBytes,
+            bodyBudget: budget,
+            ioTimeoutSeconds: ioTimeoutSeconds,
+            onClose: { [weak self] id in self?.remove(id) })
+        let id = ObjectIdentifier(connection)
         lock.lock()
-        let all = Array(connections.values)
-        connections.removeAll()
+        if connections.count >= maxConnections {
+            lock.unlock()
+            reject(nw)
+            return
+        }
+        connections[id] = connection
         lock.unlock()
-        for connection in all { connection.cancel() }
+        connection.start(queue: queue)
+    }
+
+    private func remove(_ id: ObjectIdentifier) {
+        _ = lock.withLock { connections.removeValue(forKey: id) }
+    }
+
+    private func reject(_ nw: NWConnection) {
+        nw.stateUpdateHandler = { state in
+            guard case .ready = state else { return }
+            let body = Data(
+                #"{"error":{"message":"too many concurrent connections","type":"service_unavailable","param":null,"code":null}}"#.utf8)
+            let requestID = UUID().uuidString.lowercased()
+            let head = "HTTP/1.1 503 Service Unavailable\r\n"
+                + "Date: \(HTTPDateClock.shared.now())\r\n"
+                + "Server: \(BuildInfo.serverHeader)\r\n"
+                + "Content-Type: application/json\r\n"
+                + "Content-Length: \(body.count)\r\n"
+                + "Connection: close\r\n"
+                + "Retry-After: 1\r\n"
+                + "X-Request-ID: \(requestID)\r\n"
+                + "Cache-Control: no-store\r\n\r\n"
+            var data = Data(head.utf8)
+            data.append(body)
+            nw.send(
+                content: data,
+                contentContext: .finalMessage,
+                isComplete: true,
+                completion: .contentProcessed { _ in nw.cancel() })
+        }
+        nw.start(queue: queue)
+    }
+
+    private func deliverFatal(_ message: String) {
+        lock.lock()
+        guard !fatalDelivered else { lock.unlock(); return }
+        fatalDelivered = true
+        lock.unlock()
+        onFatal(message)
     }
 }

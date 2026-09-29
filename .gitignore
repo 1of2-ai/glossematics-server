@@ -4,3 +4,6 @@ DerivedData/
 .DS_Store
 dist/
 TestBundles/
+__pycache__/
+# 622 MB all-zero table; `make fixture` writes it (checksum is fixed in the manifest)
+Fixtures/BidirLMOmni.dummy.bundle/token_embeddings.f16

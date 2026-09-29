@@ -1,69 +1,71 @@
 import Foundation
 
-/// The /docs page.
-///
-/// The page's source of truth is `Resources/docs.html` — an editable HTML document in the repo
-/// containing `{{TOKEN}}` placeholders. The file is packaged into the executable's SwiftPM
-/// resource bundle at build time; serving substitutes each token with an HTML-escaped value
-/// taken from the live server configuration, so the docs always describe the running daemon.
-///
-/// Layout adapted from the "API Documentation HTML Template" (MIT, © 2016 Florian Nicolas,
-/// github.com/floriannicolas/API-Documentation-HTML-Template).
 enum DocsPage {
-    static let version = "1.0.0"
+    static let version = BuildInfo.version
 
-    struct Context {
-        let baseURL: String
-        let modelID: String
-        let defaultDimensions: Int
-        let matryoshka: [Int]
-        let maxBatch: Int
-        let maxBodyMB: Int
+    struct Context: Sendable {
+        let baseURL: String; let modelID: String; let dimensions: Int; let maxTokens: Int
+        let compute: String; let modalities: [String]
+        let maxBatch: Int; let maxRequestTokens: Int; let maxBodyMB: Int; let maxTotalBodyMB: Int
+        let maxQueueRequests: Int; let maxQueueItems: Int; let batchWindowMS: Double; let keepWarmSeconds: Int
+        let maxConnections: Int; let ioTimeoutSeconds: Int; let shutdownGraceSeconds: Int; let accessLogMode: String
         let spaceID: String?
+        var isDummy = false
     }
 
-    /// Loaded once from the packaged resource bundle. Nil means the resource did not make it
-    /// into the bundle (a build misconfiguration) and /docs answers 500.
     private static let template: String? = {
-        guard let url = Bundle.module.url(forResource: "docs", withExtension: "html") else {
-            return nil
-        }
+        guard let url = Bundle.module.url(forResource: "docs", withExtension: "html") else { return nil }
         return try? String(contentsOf: url, encoding: .utf8)
     }()
 
     static var templateAvailable: Bool { template != nil }
 
+    static func validationError(_ context: Context) -> String? {
+        guard let template else { return "docs.html is missing from the executable resource bundle" }
+        let known = Set(tokens(context).map(\.token))
+        let unknown = placeholderNames(in: template).subtracting(known)
+        return unknown.isEmpty ? nil : "docs.html contains unknown placeholders: \(unknown.sorted().joined(separator: ", "))"
+    }
+
     static func response(_ context: Context) -> HTTPResponse {
-        guard let html = render(context) else {
-            return .error(500, APIError.apiError(
-                "documentation resource missing from the executable bundle"))
+        let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        guard let html = render(context, scriptNonce: nonce) else {
+            return .error(500, .apiError("documentation resource missing or invalid"))
         }
-        return HTTPResponse(
+        return .init(
             status: 200,
             contentType: "text/html; charset=utf-8",
-            extraHeaders: [("Cache-Control", "no-store")],
+            extraHeaders: [
+                ("Cache-Control", "no-store"),
+                ("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-\(nonce)'; img-src data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"),
+                ("Referrer-Policy", "no-referrer"),
+                ("X-Frame-Options", "DENY"),
+                ("Permissions-Policy", "camera=(), microphone=(), geolocation=()"),
+            ],
             body: Data(html.utf8))
     }
 
-    /// Token table for a context, exposed for tests. Values are substituted as-is; escaping
-    /// happens inside `render`.
-    static func tokens(_ context: Context) -> [(token: String, value: String)] {
+    static func tokens(_ c: Context, scriptNonce: String = "docs-preview") -> [(token: String, value: String)] {
         [
-            ("BASE_URL", context.baseURL),
-            ("MODEL_ID", context.modelID),
-            ("DEFAULT_DIMENSIONS", String(context.defaultDimensions)),
-            ("MATRYOSHKA", context.matryoshka.sorted().map(String.init).joined(separator: " / ")),
-            ("MAX_BATCH", String(context.maxBatch)),
-            ("MAX_BODY_MB", String(context.maxBodyMB)),
-            ("SPACE_ID", context.spaceID ?? "n/a"),
-            ("PORT", URL(string: context.baseURL)?.port.map(String.init) ?? "11435"),
-            ("VERSION", version),
+            ("BASE_URL", c.baseURL), ("MODEL_ID", c.modelID), ("DIMENSIONS", String(c.dimensions)),
+            ("MAX_TOKENS", String(c.maxTokens)), ("COMPUTE", c.compute),
+            ("MODALITIES", c.modalities.joined(separator: " · ")), ("MAX_BATCH", String(c.maxBatch)),
+            ("MAX_REQUEST_TOKENS", String(c.maxRequestTokens)),
+            ("MAX_BODY_MB", String(c.maxBodyMB)), ("MAX_TOTAL_BODY_MB", String(c.maxTotalBodyMB)), ("MAX_QUEUE_REQUESTS", String(c.maxQueueRequests)),
+            ("MAX_QUEUE_ITEMS", String(c.maxQueueItems)), ("BATCH_WINDOW_MS", String(format: "%.2f", c.batchWindowMS)),
+            ("KEEP_WARM_LABEL", c.keepWarmSeconds > 0 ? "every \(c.keepWarmSeconds)s" : "disabled"), ("MAX_CONNECTIONS", String(c.maxConnections)),
+            ("IO_TIMEOUT_SECONDS", String(c.ioTimeoutSeconds)), ("SHUTDOWN_GRACE_SECONDS", String(c.shutdownGraceSeconds)), ("ACCESS_LOG_MODE", c.accessLogMode),
+            ("SPACE_ID", c.spaceID ?? "n/a"), ("VERSION", version), ("CSP_NONCE", scriptNonce),
+            ("SERVING_MODE", c.isDummy ? "Core ML golden fixture" : "Production local microservice"),
+            ("FIXTURE_NOTICE", c.isDummy
+                ? "This process serves a deterministic Core ML test fixture. Its embeddings are not suitable for retrieval."
+                : "This process serves a validated local Core ML bundle."),
         ]
     }
 
-    static func render(_ context: Context) -> String? {
-        guard var html = template else { return nil }
-        for (token, value) in tokens(context) {
+    static func render(_ context: Context, scriptNonce: String = "docs-preview") -> String? {
+        guard validationError(context) == nil, var html = template else { return nil }
+        for (token, value) in tokens(context, scriptNonce: scriptNonce) {
             html = html.replacingOccurrences(of: "{{\(token)}}", with: escape(value))
         }
         return html
@@ -74,5 +76,14 @@ enum DocsPage {
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
             .replacingOccurrences(of: "\"", with: "&quot;")
+    }
+
+    private static func placeholderNames(in html: String) -> Set<String> {
+        guard let regex = try? NSRegularExpression(pattern: #"\{\{([A-Z0-9_]+)\}\}"#) else { return [] }
+        let range = NSRange(html.startIndex..<html.endIndex, in: html)
+        return Set(regex.matches(in: html, range: range).compactMap { match in
+            guard let r = Range(match.range(at: 1), in: html) else { return nil }
+            return String(html[r])
+        })
     }
 }
