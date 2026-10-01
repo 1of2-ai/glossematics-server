@@ -1,6 +1,6 @@
 # Glossematics releases
 
-This public repository is the download destination for **Glossematics**, the local inference daemon managed by Helmet. Active development lives in the private `1of2-ai/glossematics` repository. Earlier embedding-server source remains here as history; it is not the current daemon.
+This public repository is the download destination for **Glossematics**, the local inference daemon managed by Helmet. Active development lives in the private `1of2-ai/glossematics` repository. The current branch contains only release tooling and documentation. Earlier embedding-server source remains in Git history.
 
 Helmet checks [the latest release](https://github.com/1of2-ai/glossematics-server/releases/latest) through GitHub's releases API. No Helmet URL change is needed.
 
@@ -31,4 +31,4 @@ The publisher requires a notarized build signed by team `KA589LJT76`. Its metada
 
 ## Initial activation
 
-The release destination is configured, but Helmet cannot download a server until the first stable release is published. Push the current source and release-pipeline changes to `1of2-ai/glossematics`, configure signing credentials and `RELEASES_TOKEN`, then push a tag matching `BuildInfo.version`.
+The release destination is configured, but Helmet cannot download a server until the first stable release is published. The source release pipeline is configured in `1of2-ai/glossematics`. Add its signing credentials and `RELEASES_TOKEN`, then push a tag matching `BuildInfo.version`.
