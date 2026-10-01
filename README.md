@@ -1,19 +1,19 @@
 # Glossematics releases
 
-This public repository is the download destination for **Glossematics**, the local inference daemon managed by Helmet. Active development lives in the private `1of2-ai/glossematics` repository. The current branch contains only release tooling and documentation. Earlier embedding-server source remains in Git history.
+This public repository is the download destination for **Glossematics**. Active development lives in the private `1of2-ai/glossematics` repository. The current branch contains only release tooling and documentation. Earlier embedding-server source remains in Git history.
 
-Helmet checks [the latest release](https://github.com/1of2-ai/glossematics-server/releases/latest) through GitHub's releases API. No Helmet URL change is needed.
+Client checks [the latest release](https://github.com/1of2-ai/glossematics-server/releases/latest) through GitHub's releases API.
 
 Each stable release contains:
 
 | Asset | Purpose |
 | --- | --- |
 | `release.json` | Version, archive SHA-256, signing team, server description, and pinned embedding-model catalog |
-| `gloss-server-VERSION-macos-arm64.tar.gz` | Signed daemon and SwiftPM resource bundles, installed by Helmet |
+| `gloss-server-VERSION-macos-arm64.tar.gz` | Signed daemon and SwiftPM resource bundles |
 | `gloss-server-VERSION-macos-arm64.dmg` | Signed, notarized disk image with a stapled ticket |
 | Both `.sha256` files | Checksums for the archive and image |
 
-The archive contains `glossematicsd` plus a `gloss-server` symlink for Helmet's existing installation check. Resource bundles remain beside the executable. Model weights are not included. The current catalog covers embedding models; speech and vision keep their existing setup flows.
+The archive contains `glossematicsd` plus a `gloss-server` symlink for existing installation check. Resource bundles remain beside the executable. Model weights are not included. The current catalog covers embedding models; speech and vision keep their existing setup flows.
 
 ## Publishing
 
