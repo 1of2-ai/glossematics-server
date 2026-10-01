@@ -1,9 +1,0 @@
-{
-  "num_grid_per_side": 48,
-  "hidden": 1024,
-  "pos_table_rows": 2304,
-  "rope_inv_freq_len": 16,
-  "spatial_merge_size": 2,
-  "patch_size": 16,
-  "rope_theta": 10000.0
-}
